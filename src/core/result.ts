@@ -1,16 +1,16 @@
 import type { ToolPayload, ToolResult } from "./contracts"
 
 export const okResult = <T>(payload: ToolPayload<T>): ToolResult<T> => ({
-  status: "ok",
   ...payload,
+  status: "ok",
 })
 
 export const partialFailureResult = <T>(payload: ToolPayload<T>): ToolResult<T> => ({
-  status: "partial_failure",
   ...payload,
+  status: "partial_failure",
 })
 
 export const errorResult = <T>(payload: ToolPayload<T>): ToolResult<T> => ({
-  status: "error",
   ...payload,
+  status: "error",
 })

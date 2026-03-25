@@ -24,6 +24,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "server-registry": "$npm_execpath scripts/server-registry.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   }

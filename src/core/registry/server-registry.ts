@@ -46,6 +46,7 @@ export interface ServerRegistry {
   list(): Promise<ServerRecord[]>
   resolve(id: string): Promise<ServerRecord | null>
   upsert(record: ServerRecord): Promise<void>
+  remove(id: string): Promise<boolean>
 }
 
 export interface CreateServerRegistryOptions {
@@ -271,6 +272,21 @@ export const createServerRegistry = ({
           await save(next)
         })
       })
+    },
+    async remove(id) {
+      return enqueueWrite(async () =>
+        withRegistryWriteLock(async () => {
+          const records = await load()
+          const next = records.filter((item) => item.id !== id)
+
+          if (next.length === records.length) {
+            return false
+          }
+
+          await save(next)
+          return true
+        }),
+      )
     },
   }
 }

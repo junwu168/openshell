@@ -114,6 +114,38 @@ describe("server registry", () => {
     expect(await registry.list()).toEqual([passwordRecord, certificateRecord])
   })
 
+  test("removes an existing record without touching others", async () => {
+    const registry = createRegistry(join(tempDir, "servers.enc.json"))
+    const prodA: ServerRecord = {
+      id: "prod-a",
+      host: "10.0.0.10",
+      port: 22,
+      username: "root",
+      auth: { kind: "password", secret: "super-secret" },
+    }
+    const prodB: ServerRecord = {
+      id: "prod-b",
+      host: "10.0.0.11",
+      port: 22,
+      username: "deploy",
+      auth: { kind: "password", secret: "another-secret" },
+    }
+
+    await registry.upsert(prodA)
+    await registry.upsert(prodB)
+
+    await expect(registry.remove("prod-a")).resolves.toBe(true)
+    expect(await registry.resolve("prod-a")).toBeNull()
+    expect(await registry.list()).toEqual([prodB])
+  })
+
+  test("returns false when removing a missing record", async () => {
+    const registry = createRegistry(join(tempDir, "servers.enc.json"))
+
+    await expect(registry.remove("missing")).resolves.toBe(false)
+    expect(await registry.list()).toEqual([])
+  })
+
   test("serializes overlapping upserts so concurrent writes do not lose updates", async () => {
     const registryFile = join(tempDir, "servers.enc.json")
     let pendingCalls = 0

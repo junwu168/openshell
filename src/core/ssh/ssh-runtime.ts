@@ -52,9 +52,9 @@ const withClient = <T>(connection: ConnectConfig, action: (client: Client) => Pr
       .connect(connection)
   })
 
-export const createSshRuntime = () => ({
-  exec(connection: ConnectConfig, command: string, options: ExecOptions = {}) {
-    return withClient<ExecResult>(connection, (client) =>
+export const createSshRuntime = () => {
+  const exec = (connection: ConnectConfig, command: string, options: ExecOptions = {}) =>
+    withClient<ExecResult>(connection, (client) =>
       new Promise((resolve, reject) => {
         const effective = options.cwd ? `cd ${shell.quote(options.cwd)} && ${command}` : command
         const timer =
@@ -105,10 +105,9 @@ export const createSshRuntime = () => ({
         })
       }),
     )
-  },
 
-  readFile(connection: ConnectConfig, path: string) {
-    return withClient<string>(connection, (client) =>
+  const readFile = (connection: ConnectConfig, path: string) =>
+    withClient<string>(connection, (client) =>
       new Promise((resolve, reject) => {
         client.sftp((error, sftp) => {
           if (error) {
@@ -129,10 +128,9 @@ export const createSshRuntime = () => ({
         })
       }),
     )
-  },
 
-  writeFile(connection: ConnectConfig, path: string, content: string, mode?: number) {
-    return withClient<void>(connection, (client) =>
+  const writeFile = (connection: ConnectConfig, path: string, content: string, mode?: number) =>
+    withClient<void>(connection, (client) =>
       new Promise((resolve, reject) => {
         client.sftp((error, sftp) => {
           if (error) {
@@ -148,12 +146,16 @@ export const createSshRuntime = () => ({
         })
       }),
     )
-  },
 
-  async listDir(connection: ConnectConfig, path: string, recursive = false, limit = 200) {
+  const listDir = async (connection: ConnectConfig, path: string, recursive = false, limit = 200) => {
     if (recursive) {
-      const listed = await this.exec(connection, `find ${shell.quote(path)} | head -n ${Math.max(1, limit)}`)
-      return listed.stdout.trim().split("\n").filter(Boolean)
+      const listed = await exec(connection, `find ${shell.quote(path)} -print`)
+
+      if (listed.exitCode !== 0) {
+        throw new Error(listed.stderr.trim() || `remote find failed for ${path}`)
+      }
+
+      return listed.stdout.trim().split("\n").filter(Boolean).slice(0, Math.max(1, limit))
     }
 
     return withClient<DirEntry[]>(connection, (client) =>
@@ -175,10 +177,10 @@ export const createSshRuntime = () => ({
         })
       }),
     )
-  },
+  }
 
-  stat(connection: ConnectConfig, path: string) {
-    return withClient<PathStat>(connection, (client) =>
+  const stat = (connection: ConnectConfig, path: string) =>
+    withClient<PathStat>(connection, (client) =>
       new Promise((resolve, reject) => {
         client.sftp((error, sftp) => {
           if (error) {
@@ -202,5 +204,6 @@ export const createSshRuntime = () => ({
         })
       }),
     )
-  },
-})
+
+  return { exec, readFile, writeFile, listDir, stat }
+}

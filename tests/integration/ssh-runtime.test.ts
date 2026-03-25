@@ -28,8 +28,12 @@ describe("ssh runtime", () => {
 
   test("lists and stats remote paths", async () => {
     const entries = await runtime.listDir(server.connection, "/tmp/open-code", false, 50)
+    const recursiveEntries = await runtime.listDir(server.connection, "/tmp/open-code", true, 50)
 
-    expect(Array.isArray(entries)).toBe(true)
+    expect(entries.some((entry) => entry.name === "hosts")).toBe(true)
+    expect(entries.some((entry) => entry.name === "app.conf")).toBe(true)
+    expect(recursiveEntries).toContain("/tmp/open-code/hosts")
+    await expect(runtime.listDir(server.connection, "/tmp/does-not-exist", true, 50)).rejects.toThrow()
     expect(await runtime.stat(server.connection, "/tmp/open-code/hosts")).toMatchObject({ isFile: true })
   })
 

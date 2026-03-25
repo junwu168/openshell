@@ -1,6 +1,8 @@
 import { Client, type ConnectConfig } from "ssh2"
 import { GenericContainer, Wait } from "testcontainers"
 
+const SSH_IMAGE = "linuxserver/openssh-server:10.2_p1-r0-ls219"
+
 const waitForSshReady = async (connection: ConnectConfig, timeoutMs = 15_000) => {
   const deadline = Date.now() + timeoutMs
   let lastError: unknown
@@ -41,7 +43,7 @@ const waitForSshReady = async (connection: ConnectConfig, timeoutMs = 15_000) =>
 }
 
 export const startFakeSshServer = async () => {
-  const container = await new GenericContainer("linuxserver/openssh-server:latest")
+  const container = await new GenericContainer(SSH_IMAGE)
     .withEnvironment({
       USER_NAME: "open",
       USER_PASSWORD: "openpass",
@@ -64,7 +66,12 @@ export const startFakeSshServer = async () => {
     { content: "port=80\n", target: "/tmp/open-code/app.conf", mode: 0o666 },
   ])
 
-  await waitForSshReady(connection)
+  try {
+    await waitForSshReady(connection)
+  } catch (error) {
+    await container.stop().catch(() => undefined)
+    throw error
+  }
 
   return {
     connection,

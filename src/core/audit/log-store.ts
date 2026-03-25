@@ -9,8 +9,8 @@ export const createAuditLogStore = (file: string) => ({
   },
   async append(entry: Record<string, unknown>) {
     const stamped = {
-      timestamp: new Date().toISOString(),
       ...entry,
+      timestamp: new Date().toISOString(),
     }
     const json = JSON.stringify(stamped, (_key, value) =>
       typeof value === "string" ? redactSecrets(value) : value,

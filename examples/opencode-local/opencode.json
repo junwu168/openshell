@@ -19,7 +19,7 @@
       "df *": "allow",
       "free *": "allow",
       "ps *": "allow",
-      "systemctl status*": "allow"
+      "systemctl status *": "allow"
     }
   }
 }

@@ -8,6 +8,11 @@ import { createServerRegistry } from "../core/registry/server-registry"
 import { createSshRuntime } from "../core/ssh/ssh-runtime"
 
 const serialize = async <T>(result: Promise<T>) => JSON.stringify(await result)
+type RuntimeDependencies = Parameters<typeof createOrchestrator>[0]
+type OpenCodePluginOptions = {
+  ensureRuntimeDirs?: () => Promise<void>
+  createRuntimeDependencies?: () => RuntimeDependencies
+}
 
 const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
   list_servers: tool({
@@ -91,16 +96,15 @@ const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
   }),
 })
 
-export const OpenCodePlugin: Plugin = async () => {
-  await ensureRuntimeDirs()
-
+const buildRuntimeDependencies = (): RuntimeDependencies => {
   const registry = createServerRegistry({
     registryFile: runtimePaths.registryFile,
     secretProvider: createKeychainSecretProvider(),
   })
   const auditLog = createAuditLogStore(runtimePaths.auditLogFile)
   const auditRepo = createGitAuditRepo(runtimePaths.auditRepoDir)
-  const orchestrator = createOrchestrator({
+
+  return {
     registry,
     ssh: createSshRuntime(),
     audit: {
@@ -109,9 +113,17 @@ export const OpenCodePlugin: Plugin = async () => {
       preflightSnapshots: () => auditRepo.preflight(),
       captureSnapshots: (input) => auditRepo.captureChange(input),
     },
-  })
+  }
+}
+
+export const createOpenCodePlugin = (options: OpenCodePluginOptions = {}): Plugin => async () => {
+  await (options.ensureRuntimeDirs ?? ensureRuntimeDirs)()
+
+  const orchestrator = createOrchestrator((options.createRuntimeDependencies ?? buildRuntimeDependencies)())
 
   return {
     tool: createTools(orchestrator),
   }
 }
+
+export const OpenCodePlugin: Plugin = createOpenCodePlugin()

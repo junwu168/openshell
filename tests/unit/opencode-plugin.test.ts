@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 
 const toolNames = [
   "list_servers",
@@ -13,114 +13,34 @@ const toolNames = [
 
 describe("OpenCode plugin", () => {
   test("registers explicit remote tools in plan order and serializes results", async () => {
-    const orchestratorResult = {
-      status: "ok",
-      tool: "list_servers",
-      data: [{ id: "srv-1" }],
-      execution: { attempted: true, completed: true },
-      audit: { logWritten: true, snapshotStatus: "not-applicable" },
-    }
-
-    mock.module("/Users/wujunming/Documents/experimental/openshell/.worktrees/opencode-v1/src/core/paths", () => ({
-      runtimePaths: {
-        configDir: "/tmp/open-code-config",
-        dataDir: "/tmp/open-code-data",
-        registryFile: "/tmp/open-code-config/servers.enc.json",
-        auditLogFile: "/tmp/open-code-data/audit/actions.jsonl",
-        auditRepoDir: "/tmp/open-code-data/audit/repo",
-      },
+    const { OpenCodePlugin } = await import("../../src/index")
+    const { createOpenCodePlugin } = await import("../../src/opencode/plugin")
+    const plugin = createOpenCodePlugin({
       ensureRuntimeDirs: async () => {},
-    }))
-
-    mock.module(
-      "/Users/wujunming/Documents/experimental/openshell/.worktrees/opencode-v1/src/core/registry/keychain-provider",
-      () => ({
-        createKeychainSecretProvider: () => ({
-          async getMasterKey() {
-            return Buffer.from("a".repeat(32))
-          },
-        }),
-      }),
-    )
-
-    mock.module(
-      "/Users/wujunming/Documents/experimental/openshell/.worktrees/opencode-v1/src/core/registry/server-registry",
-      () => ({
-        createServerRegistry: () => ({
-          async list() {
-            return []
-          },
-          async resolve() {
-            return null
-          },
-          async upsert() {},
-        }),
-      }),
-    )
-
-    mock.module("/Users/wujunming/Documents/experimental/openshell/.worktrees/opencode-v1/src/core/audit/log-store", () => ({
-      createAuditLogStore: () => ({
-        async preflight() {},
-        async append() {},
-      }),
-    }))
-
-    mock.module("/Users/wujunming/Documents/experimental/openshell/.worktrees/opencode-v1/src/core/audit/git-audit-repo", () => ({
-      createGitAuditRepo: () => ({
-        async preflight() {},
-        async captureChange() {},
-      }),
-    }))
-
-    mock.module("/Users/wujunming/Documents/experimental/openshell/.worktrees/opencode-v1/src/core/ssh/ssh-runtime", () => ({
-      createSshRuntime: () => ({
-        async exec() {
-          return { stdout: "", stderr: "", exitCode: 0 }
+      createRuntimeDependencies: () => ({
+        registry: {
+          list: async () => [],
+          resolve: async () => null,
         },
-        async readFile() {
-          return ""
+        ssh: {
+          exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+          readFile: async () => "",
+          writeFile: async () => {},
+          listDir: async () => [],
+          stat: async () => ({ size: 0, mode: 0o644, isFile: true, isDirectory: false }),
         },
-        async writeFile() {},
-        async listDir() {
-          return []
-        },
-        async stat() {
-          return { size: 0, mode: 0, isFile: true, isDirectory: false }
+        audit: {
+          preflightLog: async () => {},
+          appendLog: async () => {},
+          preflightSnapshots: async () => {},
+          captureSnapshots: async () => {},
         },
       }),
-    }))
+    })
 
-    mock.module("/Users/wujunming/Documents/experimental/openshell/.worktrees/opencode-v1/src/core/orchestrator", () => ({
-      createOrchestrator: () => ({
-        async listServers() {
-          return orchestratorResult
-        },
-        async remoteExec() {
-          return orchestratorResult
-        },
-        async remoteReadFile() {
-          return orchestratorResult
-        },
-        async remoteWriteFile() {
-          return orchestratorResult
-        },
-        async remotePatchFile() {
-          return orchestratorResult
-        },
-        async remoteListDir() {
-          return orchestratorResult
-        },
-        async remoteStat() {
-          return orchestratorResult
-        },
-        async remoteFind() {
-          return orchestratorResult
-        },
-      }),
-    }))
+    expect(typeof OpenCodePlugin).toBe("function")
 
-    const { OpenCodePlugin } = await import("/Users/wujunming/Documents/experimental/openshell/.worktrees/opencode-v1/src/index")
-    const hooks = await OpenCodePlugin({
+    const hooks = await plugin({
       client: {} as never,
       project: {} as never,
       directory: "/tmp/project",
@@ -131,6 +51,14 @@ describe("OpenCode plugin", () => {
 
     expect(Object.keys(hooks.tool ?? {})).toEqual(toolNames)
     expect(typeof hooks.tool?.list_servers?.execute).toBe("function")
-    await expect(hooks.tool?.list_servers?.execute({}, {} as never)).resolves.toBe(JSON.stringify(orchestratorResult))
+
+    const serialized = await hooks.tool?.list_servers?.execute({}, {} as never)
+    expect(JSON.parse(serialized ?? "null")).toMatchObject({
+      status: "ok",
+      tool: "list_servers",
+      data: [],
+      execution: { attempted: true, completed: true },
+      audit: { logWritten: true, snapshotStatus: "not-applicable" },
+    })
   })
 })

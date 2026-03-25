@@ -3,17 +3,40 @@ import { dirname } from "node:path"
 import { decryptJson, encryptJson, type EncryptedJsonPayload } from "./crypto"
 import type { SecretProvider } from "./secret-provider"
 
+export type ServerMetadataValue = string | number | boolean | null
+
 export interface PasswordAuthRecord {
   kind: "password"
   secret: string
 }
+
+export interface PrivateKeyAuthRecord {
+  kind: "privateKey"
+  privateKey: string
+  passphrase?: string
+}
+
+export interface CertificateAuthRecord {
+  kind: "certificate"
+  certificate: string
+  privateKey: string
+  passphrase?: string
+}
+
+export type ServerAuthRecord =
+  | PasswordAuthRecord
+  | PrivateKeyAuthRecord
+  | CertificateAuthRecord
 
 export interface ServerRecord {
   id: string
   host: string
   port: number
   username: string
-  auth: PasswordAuthRecord
+  labels?: string[]
+  groups?: string[]
+  metadata?: Record<string, ServerMetadataValue>
+  auth: ServerAuthRecord
 }
 
 export interface ServerRegistry {
@@ -31,6 +54,8 @@ export const createServerRegistry = ({
   registryFile,
   secretProvider,
 }: CreateServerRegistryOptions): ServerRegistry => {
+  let writeQueue = Promise.resolve()
+
   const load = async (): Promise<ServerRecord[]> => {
     try {
       const raw = await readFile(registryFile, "utf8")
@@ -53,6 +78,15 @@ export const createServerRegistry = ({
     await writeFile(registryFile, JSON.stringify(payload, null, 2))
   }
 
+  const enqueueWrite = <T>(operation: () => Promise<T>) => {
+    const next = writeQueue.then(operation)
+    writeQueue = next.then(
+      () => undefined,
+      () => undefined,
+    )
+    return next
+  }
+
   return {
     async list() {
       return load()
@@ -61,10 +95,12 @@ export const createServerRegistry = ({
       return (await load()).find((record) => record.id === id) ?? null
     },
     async upsert(record) {
-      const records = await load()
-      const next = records.filter((item) => item.id !== record.id)
-      next.push(record)
-      await save(next)
+      await enqueueWrite(async () => {
+        const records = await load()
+        const next = records.filter((item) => item.id !== record.id)
+        next.push(record)
+        await save(next)
+      })
     },
   }
 }

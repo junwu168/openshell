@@ -1,6 +1,8 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { dirname } from "node:path"
+import { promisify } from "node:util"
 import { decryptJson, encryptJson, type EncryptedJsonPayload } from "./crypto"
 import type { SecretProvider } from "./secret-provider"
 
@@ -50,6 +52,7 @@ export interface CreateServerRegistryOptions {
   registryFile: string
   secretProvider: SecretProvider
   lockOptions?: {
+    getProcessStartTime?: (pid: number) => Promise<number | null>
     retryMs?: number
     timeoutMs?: number
   }
@@ -60,6 +63,8 @@ export const createServerRegistry = ({
   secretProvider,
   lockOptions,
 }: CreateServerRegistryOptions): ServerRegistry => {
+  const execFileAsync = promisify(execFile)
+  const resolveProcessStartTime = lockOptions?.getProcessStartTime
   const lockRetryMs = lockOptions?.retryMs ?? 10
   const lockTimeoutMs = lockOptions?.timeoutMs ?? 5_000
   let writeQueue = Promise.resolve()
@@ -122,6 +127,24 @@ export const createServerRegistry = ({
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
+  const getProcessStartTime = async (pid: number) => {
+    if (resolveProcessStartTime) {
+      return resolveProcessStartTime(pid)
+    }
+
+    try {
+      const { stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)])
+      const startedAt = Date.parse(stdout.trim())
+      return Number.isNaN(startedAt) ? null : startedAt
+    } catch (error: unknown) {
+      const exitCode = (error as { code?: unknown }).code
+      if (exitCode === 1 || exitCode === "EPERM") {
+        return null
+      }
+      throw error
+    }
+  }
+
   const tryReclaimAbandonedLock = async () => {
     let raw: string
     try {
@@ -134,15 +157,31 @@ export const createServerRegistry = ({
     }
 
     let ownerPid: number | null = null
+    let lockCreatedAt: number | null = null
     try {
-      const parsed = JSON.parse(raw) as { pid?: unknown }
+      const parsed = JSON.parse(raw) as { pid?: unknown; createdAt?: unknown }
       ownerPid = typeof parsed.pid === "number" ? parsed.pid : null
+      if (typeof parsed.createdAt === "string") {
+        const parsedCreatedAt = Date.parse(parsed.createdAt)
+        lockCreatedAt = Number.isNaN(parsedCreatedAt) ? null : parsedCreatedAt
+      }
     } catch {
       return false
     }
 
-    if (ownerPid === null || isProcessAlive(ownerPid)) {
+    if (ownerPid === null) {
       return false
+    }
+
+    if (isProcessAlive(ownerPid)) {
+      if (lockCreatedAt === null) {
+        return false
+      }
+
+      const ownerStartedAt = await getProcessStartTime(ownerPid)
+      if (ownerStartedAt === null || ownerStartedAt <= lockCreatedAt) {
+        return false
+      }
     }
 
     const reclaimedLockFile = `${lockFile}.reclaimed.${randomUUID()}`

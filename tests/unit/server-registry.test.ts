@@ -269,12 +269,18 @@ describe("server registry", () => {
     expect(await reloadedRegistry.list()).toEqual([firstRecord, secondRecord])
   })
 
-  test("recovers from a dead lock owner left on disk", async () => {
+  test("reclaims a lock when the pid now belongs to a newer process", async () => {
     const registryFile = join(tempDir, "servers.enc.json")
     const lockFile = `${registryFile}.lock`
-    const registry = createRegistry(registryFile)
+    const registry = createServerRegistry({
+      registryFile,
+      secretProvider: { getMasterKey: async () => masterKey },
+      lockOptions: {
+        getProcessStartTime: async (pid) => (pid === process.pid ? Date.now() : null),
+      },
+    })
 
-    await writeFile(lockFile, JSON.stringify({ pid: 999999, createdAt: new Date(0).toISOString() }))
+    await writeFile(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date(0).toISOString() }))
 
     const record: ServerRecord = {
       id: "prod-a",
@@ -292,16 +298,18 @@ describe("server registry", () => {
   test("times out when a live lock owner keeps the registry busy", async () => {
     const registryFile = join(tempDir, "servers.enc.json")
     const lockFile = `${registryFile}.lock`
+    const lockCreatedAt = new Date().toISOString()
     const registry = createServerRegistry({
       registryFile,
       secretProvider: { getMasterKey: async () => masterKey },
       lockOptions: {
+        getProcessStartTime: async (pid) => (pid === process.pid ? Date.now() - 1_000 : null),
         retryMs: 5,
         timeoutMs: 40,
       },
     })
 
-    await writeFile(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }))
+    await writeFile(lockFile, JSON.stringify({ pid: process.pid, createdAt: lockCreatedAt }))
 
     await expect(
       registry.upsert({

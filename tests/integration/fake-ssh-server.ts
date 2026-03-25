@@ -61,12 +61,11 @@ export const startFakeSshServer = async () => {
     password: "openpass",
   }
 
-  await container.copyContentToContainer([
-    { content: "127.0.0.1 localhost\n", target: "/tmp/open-code/hosts", mode: 0o666 },
-    { content: "port=80\n", target: "/tmp/open-code/app.conf", mode: 0o666 },
-  ])
-
   try {
+    await container.copyContentToContainer([
+      { content: "127.0.0.1 localhost\n", target: "/tmp/open-code/hosts", mode: 0o666 },
+      { content: "port=80\n", target: "/tmp/open-code/app.conf", mode: 0o666 },
+    ])
     await waitForSshReady(connection)
   } catch (error) {
     await container.stop().catch(() => undefined)

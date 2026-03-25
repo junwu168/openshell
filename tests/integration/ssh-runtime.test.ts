@@ -20,6 +20,20 @@ describe("ssh runtime", () => {
     expect(result.stdout).toContain("localhost")
   })
 
+  test("executes commands from a cwd that contains spaces", async () => {
+    await runtime.exec(server.connection, "mkdir -p '/tmp/open code'")
+
+    const result = await runtime.exec(server.connection, "pwd", { cwd: "/tmp/open code" })
+
+    expect(result.stdout.trim()).toBe("/tmp/open code")
+  })
+
+  test("times out long-running commands", async () => {
+    await expect(runtime.exec(server.connection, "sleep 2", { timeout: 50 })).rejects.toThrow(
+      "command timed out after 50ms",
+    )
+  })
+
   test("writes and reads a remote file through sftp", async () => {
     await runtime.writeFile(server.connection, "/tmp/open-code/app.conf", "port=80\n")
 

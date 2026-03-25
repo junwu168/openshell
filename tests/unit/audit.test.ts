@@ -112,6 +112,72 @@ describe("audit engine", () => {
     expect(files.includes("unrelated.txt")).toBe(false)
   })
 
+  test("encodes distinct logical targets into distinct repo paths", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "open-code-git-audit-unique-"))
+    const repoDir = join(tempRoot, "repo")
+    const repo = createGitAuditRepo(repoDir)
+
+    await repo.preflight()
+    await repo.captureChange({
+      server: "prod:a",
+      path: "/etc/a?b",
+      before: "one\n",
+      after: "two\n",
+    })
+    await repo.captureChange({
+      server: "prod/a",
+      path: "/etc/a:b",
+      before: "three\n",
+      after: "four\n",
+    })
+
+    let artifactCount = 0
+    const walk = async (dir: string) => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const child = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          await walk(child)
+        } else if (entry.name.endsWith(".before") || entry.name.endsWith(".after")) {
+          artifactCount++
+        }
+      }
+    }
+    await walk(repoDir)
+
+    expect(artifactCount).toBe(4)
+  })
+
+  test("keeps hostile path segments inside the repo and distinct", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "open-code-git-audit-hostile-"))
+    const repoDir = join(tempRoot, "repo")
+    const repo = createGitAuditRepo(repoDir)
+
+    await repo.preflight()
+    await repo.captureChange({
+      server: "../escape",
+      path: "/../loot?mode=ro",
+      before: "before\n",
+      after: "after\n",
+    })
+
+    expect(await exists(join(tempRoot, "escape"))).toBe(false)
+
+    let artifactCount = 0
+    const walk = async (dir: string) => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const child = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          await walk(child)
+        } else if (entry.name.endsWith(".before") || entry.name.endsWith(".after")) {
+          artifactCount++
+        }
+      }
+    }
+    await walk(repoDir)
+
+    expect(artifactCount).toBe(2)
+  })
+
   test("records repeated identical captures as distinct commits", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "open-code-git-audit-repeat-"))
     const repoDir = join(tempRoot, "repo")

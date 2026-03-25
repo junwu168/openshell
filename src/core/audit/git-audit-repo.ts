@@ -7,19 +7,15 @@ const run = async (cwd: string, args: string[]) => {
   if (exitCode !== 0) throw new Error(await new Response(proc.stderr).text())
 }
 
-const sanitizeSegment = (segment: string) => {
-  if (segment === "." || segment === "..") return "_"
-
-  const cleaned = segment.replace(/[^A-Za-z0-9._-]/g, "_")
-  return cleaned.length > 0 ? cleaned : "_"
-}
+const encodeSegment = (segment: string) =>
+  `s-${Buffer.from(segment, "utf8").toString("base64url")}`
 
 const snapshotParts = (server: string, path: string) => [
-  sanitizeSegment(server),
+  encodeSegment(server),
   ...path
     .split("/")
     .filter((segment) => segment.length > 0)
-    .map(sanitizeSegment),
+    .map(encodeSegment),
 ]
 
 export const createGitAuditRepo = (repoDir: string) => ({

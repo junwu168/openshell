@@ -1,7 +1,9 @@
+import { constants as osConstants } from "node:os"
 import { Shescape } from "shescape"
 import { Client, type ConnectConfig } from "ssh2"
 
 const shell = new Shescape({ shell: "zsh" })
+const DEFAULT_OPERATION_TIMEOUT_MS = 30_000
 
 type ExecOptions = {
   cwd?: string
@@ -26,19 +28,52 @@ type PathStat = {
   isDirectory: boolean
 }
 
-const withClient = <T>(connection: ConnectConfig, action: (client: Client) => Promise<T>) =>
+type RuntimeOptions = {
+  operationTimeoutMs?: number
+}
+
+const normalizeShellPath = (path: string) => (path.startsWith("-") ? `./${path}` : path)
+const quoteShellPath = (path: string) => shell.quote(normalizeShellPath(path))
+const clampLimit = (limit: number) => Math.max(0, Math.trunc(limit))
+const joinRemotePath = (parent: string, name: string) => (parent.endsWith("/") ? `${parent}${name}` : `${parent}/${name}`)
+const signalToExitCode = (signal: string | null | undefined) => {
+  if (!signal) {
+    return 0
+  }
+
+  const normalized = signal.startsWith("SIG") ? signal : `SIG${signal}`
+  const signalNumber = osConstants.signals[normalized as keyof typeof osConstants.signals]
+
+  return signalNumber === undefined ? 1 : 128 + signalNumber
+}
+
+const withClient = <T>(
+  connection: ConnectConfig,
+  action: (client: Client) => Promise<T>,
+  timeoutMs: number | null = null,
+) =>
   new Promise<T>((resolve, reject) => {
     const client = new Client()
     let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
 
-    const finish = (handler: () => void) => {
+    const finish = (handler: () => void, close: () => void = () => client.end()) => {
       if (settled) {
         return
       }
 
       settled = true
+      if (timer) {
+        clearTimeout(timer)
+      }
       handler()
-      client.end()
+      close()
+    }
+
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => {
+        finish(() => reject(new Error(`ssh operation timed out after ${timeoutMs}ms`)), () => client.destroy())
+      }, timeoutMs)
     }
 
     client
@@ -49,14 +84,16 @@ const withClient = <T>(connection: ConnectConfig, action: (client: Client) => Pr
         )
       })
       .on("error", (error) => finish(() => reject(error)))
-      .connect(connection)
+      .connect(timeoutMs === null ? connection : { ...connection, readyTimeout: connection.readyTimeout ?? timeoutMs })
   })
 
-export const createSshRuntime = () => {
+export const createSshRuntime = (options: RuntimeOptions = {}) => {
+  const operationTimeoutMs = options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS
+
   const exec = (connection: ConnectConfig, command: string, options: ExecOptions = {}) =>
     withClient<ExecResult>(connection, (client) =>
       new Promise((resolve, reject) => {
-        const effective = options.cwd ? `cd ${shell.quote(options.cwd)} && ${command}` : command
+        const effective = options.cwd ? `cd -- ${quoteShellPath(options.cwd)} && ${command}` : command
         let settled = false
         let streamRef: {
           signal: (signalName: string) => void
@@ -114,8 +151,8 @@ export const createSshRuntime = () => {
             stderr += chunk.toString()
           })
 
-          stream.on("exit", (code) => {
-            exitCode = code ?? 0
+          stream.on("exit", (code, signal) => {
+            exitCode = code ?? signalToExitCode(signal)
           })
 
           stream.on("close", () => {
@@ -127,6 +164,7 @@ export const createSshRuntime = () => {
           })
         })
       }),
+      null,
     )
 
   const readFile = (connection: ConnectConfig, path: string) =>
@@ -150,6 +188,7 @@ export const createSshRuntime = () => {
           })
         })
       }),
+      operationTimeoutMs,
     )
 
   const writeFile = (connection: ConnectConfig, path: string, content: string, mode?: number) =>
@@ -168,17 +207,99 @@ export const createSshRuntime = () => {
           stream.end(content)
         })
       }),
+      operationTimeoutMs,
     )
 
   const listDir = async (connection: ConnectConfig, path: string, recursive = false, limit = 200) => {
+    const boundedLimit = clampLimit(limit)
+
+    if (boundedLimit === 0) {
+      return []
+    }
+
     if (recursive) {
-      const listed = await exec(connection, `find ${shell.quote(path)} -print`)
+      return withClient<string[]>(connection, (client) =>
+        new Promise((resolve, reject) => {
+          client.sftp((error, sftp) => {
+            if (error) {
+              reject(error)
+              return
+            }
 
-      if (listed.exitCode !== 0) {
-        throw new Error(listed.stderr.trim() || `remote find failed for ${path}`)
-      }
+            const statPath = (target: string) =>
+              new Promise<any>((resolvePath, rejectPath) => {
+                sftp.stat(target, (statError, stats) => {
+                  if (statError) {
+                    rejectPath(statError)
+                    return
+                  }
 
-      return listed.stdout.trim().split("\n").filter(Boolean).slice(0, Math.max(1, limit))
+                  resolvePath(stats)
+                })
+              })
+
+            const readDir = (target: string) =>
+              new Promise<any[]>((resolvePath, rejectPath) => {
+                sftp.readdir(target, (readError, entries) => {
+                  if (readError) {
+                    rejectPath(readError)
+                    return
+                  }
+
+                  resolvePath(entries)
+                })
+              })
+
+            const visit = async (target: string, output: string[]) => {
+              if (output.length >= boundedLimit) {
+                return
+              }
+
+              output.push(target)
+
+              if (output.length >= boundedLimit) {
+                return
+              }
+
+              const targetStats = await statPath(target)
+              if (!targetStats.isDirectory()) {
+                return
+              }
+
+              const entries = await readDir(target)
+
+              for (const entry of entries) {
+                if (entry.filename === "." || entry.filename === "..") {
+                  continue
+                }
+
+                const fullPath = joinRemotePath(target, entry.filename)
+
+                if (entry.attrs.isDirectory()) {
+                  await visit(fullPath, output)
+                } else if (output.length < boundedLimit) {
+                  output.push(fullPath)
+                }
+
+                if (output.length >= boundedLimit) {
+                  return
+                }
+              }
+            }
+
+            void (async () => {
+              try {
+                const output: string[] = []
+                await visit(path, output)
+                resolve(output)
+              } catch (visitError) {
+                reject(visitError)
+              }
+            })()
+          })
+        }),
+        operationTimeoutMs,
+      )
     }
 
     return withClient<DirEntry[]>(connection, (client) =>
@@ -195,10 +316,11 @@ export const createSshRuntime = () => {
               return
             }
 
-            resolve(entries.map((entry) => ({ name: entry.filename, longname: entry.longname })))
+            resolve(entries.slice(0, boundedLimit).map((entry) => ({ name: entry.filename, longname: entry.longname })))
           })
         })
       }),
+      operationTimeoutMs,
     )
   }
 
@@ -226,6 +348,7 @@ export const createSshRuntime = () => {
           })
         })
       }),
+      operationTimeoutMs,
     )
 
   return { exec, readFile, writeFile, listDir, stat }

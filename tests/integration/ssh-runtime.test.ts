@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { createSshRuntime } from "../../src/core/ssh/ssh-runtime"
-import { applyUnifiedPatch } from "../../src/core/patch"
 import { startFakeSshServer } from "./fake-ssh-server"
 
 describe("ssh runtime", () => {
@@ -10,10 +9,6 @@ describe("ssh runtime", () => {
   beforeAll(async () => {
     server = await startFakeSshServer()
     runtime = createSshRuntime()
-    await Bun.sleep(5_000)
-    await runtime.exec(server.connection, "mkdir -p /tmp/open-code")
-    await runtime.writeFile(server.connection, "/tmp/open-code/hosts", "127.0.0.1 localhost\n")
-    await runtime.writeFile(server.connection, "/tmp/open-code/app.conf", "port=80\n")
   }, { timeout: 60_000 })
 
   afterAll(async () => {
@@ -39,6 +34,7 @@ describe("ssh runtime", () => {
   })
 
   test("applies a unified patch before writing the updated file", async () => {
+    const { applyUnifiedPatch } = await import("../../src/core/patch")
     const current = await runtime.readFile(server.connection, "/tmp/open-code/app.conf")
     const next = applyUnifiedPatch(
       current,

@@ -133,9 +133,18 @@ export const createServerRegistry = ({
     }
 
     try {
-      const { stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)])
-      const startedAt = Date.parse(stdout.trim())
-      return Number.isNaN(startedAt) ? null : startedAt
+      const { stdout } = await execFileAsync("ps", ["-o", "etimes=", "-p", String(pid)])
+      const elapsedSecondsText = stdout.trim()
+      if (!/^\d+$/.test(elapsedSecondsText)) {
+        return null
+      }
+
+      const elapsedSeconds = Number.parseInt(elapsedSecondsText, 10)
+      if (!Number.isFinite(elapsedSeconds)) {
+        return null
+      }
+
+      return Date.now() - elapsedSeconds * 1_000
     } catch (error: unknown) {
       const exitCode = (error as { code?: unknown }).code
       if (exitCode === 1 || exitCode === "EPERM") {

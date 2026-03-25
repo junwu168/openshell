@@ -169,4 +169,103 @@ describe("server registry", () => {
 
     expect(await registry.list()).toEqual([firstRecord, secondRecord])
   })
+
+  test("reads wait for pending writes from the same registry instance", async () => {
+    const registryFile = join(tempDir, "servers.enc.json")
+    let blockedCallCount = 0
+    let releaseWrite!: () => void
+    let writeBlocked!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      writeBlocked = resolve
+    })
+
+    const registry = createServerRegistry({
+      registryFile,
+      secretProvider: {
+        async getMasterKey() {
+          blockedCallCount += 1
+          if (blockedCallCount === 1) {
+            await new Promise<void>((resolve) => {
+              releaseWrite = resolve
+              writeBlocked()
+            })
+          }
+          return masterKey
+        },
+      },
+    })
+
+    const record: ServerRecord = {
+      id: "prod-a",
+      host: "10.0.0.10",
+      port: 22,
+      username: "root",
+      auth: { kind: "password", secret: "super-secret" },
+    }
+
+    const pendingUpsert = registry.upsert(record)
+    await blocked
+
+    const pendingResolve = registry.resolve("prod-a")
+    const pendingList = registry.list()
+
+    releaseWrite()
+
+    await pendingUpsert
+    expect(await pendingResolve).toEqual(record)
+    expect(await pendingList).toEqual([record])
+  })
+
+  test("two registry instances do not lose records when upserting concurrently", async () => {
+    const registryFile = join(tempDir, "servers.enc.json")
+    let releaseFirstWrite!: () => void
+    let firstWriteBlocked!: () => void
+    const firstBlocked = new Promise<void>((resolve) => {
+      firstWriteBlocked = resolve
+    })
+
+    const firstRegistry = createServerRegistry({
+      registryFile,
+      secretProvider: {
+        async getMasterKey() {
+          await new Promise<void>((resolve) => {
+            releaseFirstWrite = resolve
+            firstWriteBlocked()
+          })
+          return masterKey
+        },
+      },
+    })
+
+    const secondRegistry = createRegistry(registryFile)
+
+    const firstRecord: ServerRecord = {
+      id: "prod-a",
+      host: "10.0.0.10",
+      port: 22,
+      username: "root",
+      auth: { kind: "password", secret: "super-secret" },
+    }
+
+    const secondRecord: ServerRecord = {
+      id: "prod-b",
+      host: "10.0.0.11",
+      port: 22,
+      username: "deploy",
+      auth: {
+        kind: "privateKey",
+        privateKey: "private-key-body",
+      },
+    }
+
+    const firstUpsert = firstRegistry.upsert(firstRecord)
+    await firstBlocked
+    const secondUpsert = secondRegistry.upsert(secondRecord)
+    releaseFirstWrite()
+    await firstUpsert
+    await secondUpsert
+
+    const reloadedRegistry = createRegistry(registryFile)
+    expect(await reloadedRegistry.list()).toEqual([firstRecord, secondRecord])
+  })
 })

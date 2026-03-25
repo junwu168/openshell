@@ -1,14 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "permission": {
-    "list_servers": "allow",
-    "remote_read_file": "allow",
-    "remote_list_dir": "allow",
-    "remote_stat": "allow",
-    "remote_find": "allow",
-    "remote_write_file": "ask",
-    "remote_patch_file": "ask",
-    "remote_exec": {
+    "edit": "ask",
+    "bash": {
       "*": "ask",
       "cat *": "allow",
       "grep *": "allow",

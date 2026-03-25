@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { readFile } from "node:fs/promises"
+import type { ToolContext } from "@opencode-ai/plugin"
 
 const toolNames = [
   "list_servers",
@@ -11,31 +13,54 @@ const toolNames = [
   "remote_find",
 ]
 
+const createRuntimeDependencies = () => ({
+  registry: {
+    list: async () => [],
+    resolve: async () => ({
+      id: "prod-a",
+      host: "prod-a.example",
+      port: 22,
+      username: "open",
+      auth: {
+        kind: "password" as const,
+        secret: "openpass",
+      },
+    }),
+  },
+  ssh: {
+    exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    readFile: async () => "",
+    writeFile: async () => {},
+    listDir: async () => [],
+    stat: async () => ({ size: 0, mode: 0o644, isFile: true, isDirectory: false }),
+  },
+  audit: {
+    preflightLog: async () => {},
+    appendLog: async () => {},
+    preflightSnapshots: async () => {},
+    captureSnapshots: async () => {},
+  },
+})
+
+const createToolContext = (overrides: Partial<ToolContext> = {}): ToolContext => ({
+  sessionID: "session-1",
+  messageID: "message-1",
+  agent: "default",
+  directory: "/tmp/project",
+  worktree: "/tmp/project",
+  abort: new AbortController().signal,
+  metadata: () => {},
+  ask: async () => {},
+  ...overrides,
+})
+
 describe("OpenCode plugin", () => {
   test("registers explicit remote tools in plan order and serializes results", async () => {
     const { OpenCodePlugin } = await import("../../src/index")
     const { createOpenCodePlugin } = await import("../../src/opencode/plugin")
     const plugin = createOpenCodePlugin({
       ensureRuntimeDirs: async () => {},
-      createRuntimeDependencies: () => ({
-        registry: {
-          list: async () => [],
-          resolve: async () => null,
-        },
-        ssh: {
-          exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-          readFile: async () => "",
-          writeFile: async () => {},
-          listDir: async () => [],
-          stat: async () => ({ size: 0, mode: 0o644, isFile: true, isDirectory: false }),
-        },
-        audit: {
-          preflightLog: async () => {},
-          appendLog: async () => {},
-          preflightSnapshots: async () => {},
-          captureSnapshots: async () => {},
-        },
-      }),
+      createRuntimeDependencies,
     })
 
     expect(typeof OpenCodePlugin).toBe("function")
@@ -60,5 +85,138 @@ describe("OpenCode plugin", () => {
       execution: { attempted: true, completed: true },
       audit: { logWritten: true, snapshotStatus: "not-applicable" },
     })
+  })
+
+  test("does not ask for approval before safe remote exec commands", async () => {
+    const { createOpenCodePlugin } = await import("../../src/opencode/plugin")
+    const asks: Array<Record<string, unknown>> = []
+    const plugin = createOpenCodePlugin({
+      ensureRuntimeDirs: async () => {},
+      createRuntimeDependencies,
+    })
+
+    const hooks = await plugin({
+      client: {} as never,
+      project: {} as never,
+      directory: "/tmp/project",
+      worktree: "/tmp/project",
+      serverUrl: new URL("http://localhost"),
+      $: {} as never,
+    })
+
+    await hooks.tool?.remote_exec?.execute(
+      {
+        server: "prod-a",
+        command: "cat /etc/hosts",
+      },
+      createToolContext({
+        ask: async (request) => {
+          asks.push(request)
+        },
+      }),
+    )
+
+    expect(asks).toHaveLength(0)
+  })
+
+  test("asks OpenCode for bash approval before approval-required remote exec commands", async () => {
+    const { createOpenCodePlugin } = await import("../../src/opencode/plugin")
+    const asks: Array<Record<string, unknown>> = []
+    const plugin = createOpenCodePlugin({
+      ensureRuntimeDirs: async () => {},
+      createRuntimeDependencies,
+    })
+
+    const hooks = await plugin({
+      client: {} as never,
+      project: {} as never,
+      directory: "/tmp/project",
+      worktree: "/tmp/project",
+      serverUrl: new URL("http://localhost"),
+      $: {} as never,
+    })
+
+    await hooks.tool?.remote_exec?.execute(
+      {
+        server: "prod-a",
+        command: "kubectl get pods",
+      },
+      createToolContext({
+        ask: async (request) => {
+          asks.push(request)
+        },
+      }),
+    )
+
+    expect(asks).toEqual([
+      expect.objectContaining({
+        permission: "bash",
+        patterns: ["kubectl get pods"],
+        always: [],
+        metadata: expect.objectContaining({
+          tool: "remote_exec",
+          server: "prod-a",
+          command: "kubectl get pods",
+        }),
+      }),
+    ])
+  })
+
+  test("asks OpenCode for edit approval before remote writes", async () => {
+    const { createOpenCodePlugin } = await import("../../src/opencode/plugin")
+    const asks: Array<Record<string, unknown>> = []
+    const plugin = createOpenCodePlugin({
+      ensureRuntimeDirs: async () => {},
+      createRuntimeDependencies,
+    })
+
+    const hooks = await plugin({
+      client: {} as never,
+      project: {} as never,
+      directory: "/tmp/project",
+      worktree: "/tmp/project",
+      serverUrl: new URL("http://localhost"),
+      $: {} as never,
+    })
+
+    await hooks.tool?.remote_write_file?.execute(
+      {
+        server: "prod-a",
+        path: "/tmp/open-code-smoke.txt",
+        content: "hello",
+      },
+      createToolContext({
+        ask: async (request) => {
+          asks.push(request)
+        },
+      }),
+    )
+
+    expect(asks).toEqual([
+      expect.objectContaining({
+        permission: "edit",
+        patterns: ["/tmp/open-code-smoke.txt"],
+        always: [],
+        metadata: expect.objectContaining({
+          tool: "remote_write_file",
+          server: "prod-a",
+          path: "/tmp/open-code-smoke.txt",
+        }),
+      }),
+    ])
+  })
+
+  test("uses built-in bash and edit permission families in the local OpenCode example config", async () => {
+    const raw = await readFile(new URL("../../examples/opencode-local/opencode.json", import.meta.url), "utf8")
+    const config = JSON.parse(raw)
+
+    expect(config.permission.edit).toBe("ask")
+    expect(config.permission.bash).toMatchObject({
+      "*": "ask",
+      "cat *": "allow",
+      "systemctl status *": "allow",
+    })
+    expect(config.permission.remote_write_file).toBeUndefined()
+    expect(config.permission.remote_exec).toBeUndefined()
   })
 })

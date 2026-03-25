@@ -1,10 +1,12 @@
-import { tool, type Plugin } from "@opencode-ai/plugin"
+import { tool, type Plugin, type ToolContext } from "@opencode-ai/plugin"
 import { createAuditLogStore } from "../core/audit/log-store"
 import { createGitAuditRepo } from "../core/audit/git-audit-repo"
 import { createOrchestrator } from "../core/orchestrator"
+import { classifyRemoteExec } from "../core/policy"
 import { ensureRuntimeDirs, runtimePaths } from "../core/paths"
 import { createKeychainSecretProvider } from "../core/registry/keychain-provider"
 import { createServerRegistry } from "../core/registry/server-registry"
+import { errorResult } from "../core/result"
 import { createSshRuntime } from "../core/ssh/ssh-runtime"
 
 const serialize = async <T>(result: Promise<T>) => JSON.stringify(await result)
@@ -12,6 +14,81 @@ type RuntimeDependencies = Parameters<typeof createOrchestrator>[0]
 type OpenCodePluginOptions = {
   ensureRuntimeDirs?: () => Promise<void>
   createRuntimeDependencies?: () => RuntimeDependencies
+}
+
+type ApprovalRequest = Parameters<ToolContext["ask"]>[0]
+
+const approvalRejected = (toolId: string, server: string, error: unknown) =>
+  JSON.stringify(
+    errorResult({
+      tool: toolId,
+      server,
+      code: "APPROVAL_REJECTED",
+      message: error instanceof Error ? error.message : "approval rejected",
+      execution: { attempted: false, completed: false },
+      audit: { logWritten: false, snapshotStatus: "not-applicable" },
+    }),
+  )
+
+const requestApproval = async (
+  context: ToolContext,
+  toolId: string,
+  server: string,
+  request: ApprovalRequest | null,
+) => {
+  if (!request) {
+    return null
+  }
+
+  try {
+    await context.ask(request)
+    return null
+  } catch (error) {
+    return approvalRejected(toolId, server, error)
+  }
+}
+
+const createEditApproval = (
+  toolId: "remote_write_file" | "remote_patch_file",
+  input: { server: string; path: string; mode?: number; patch?: string; content?: string },
+): ApprovalRequest => ({
+  permission: "edit",
+  patterns: [input.path],
+  always: [],
+  metadata: {
+    tool: toolId,
+    server: input.server,
+    path: input.path,
+    mode: input.mode,
+    contentBytes: input.content ? Buffer.byteLength(input.content) : undefined,
+    patchBytes: input.patch ? Buffer.byteLength(input.patch) : undefined,
+  },
+})
+
+const createRemoteExecApproval = (input: {
+  server: string
+  command: string
+  cwd?: string
+  timeout?: number
+}): ApprovalRequest | null => {
+  const classification = classifyRemoteExec(input.command)
+  if (classification.decision !== "approval-required") {
+    return null
+  }
+
+  return {
+    permission: "bash",
+    patterns: [input.command],
+    always: [],
+    metadata: {
+      tool: "remote_exec",
+      server: input.server,
+      command: input.command,
+      cwd: input.cwd,
+      timeout: input.timeout,
+      reason: classification.reason,
+    },
+  }
 }
 
 const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
@@ -28,8 +105,19 @@ const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
       cwd: tool.schema.string().optional(),
       timeout: tool.schema.number().int().positive().optional(),
     },
-    execute: async ({ server, command, cwd, timeout }) =>
-      serialize(orchestrator.remoteExec({ server, command, cwd, timeout })),
+    execute: async ({ server, command, cwd, timeout }, context) => {
+      const rejected = await requestApproval(
+        context,
+        "remote_exec",
+        server,
+        createRemoteExecApproval({ server, command, cwd, timeout }),
+      )
+      if (rejected) {
+        return rejected
+      }
+
+      return serialize(orchestrator.remoteExec({ server, command, cwd, timeout }))
+    },
   }),
   remote_read_file: tool({
     description: "Read a remote file.",
@@ -50,8 +138,19 @@ const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
       content: tool.schema.string(),
       mode: tool.schema.number().int().positive().optional(),
     },
-    execute: async ({ server, path, content, mode }) =>
-      serialize(orchestrator.remoteWriteFile({ server, path, content, mode })),
+    execute: async ({ server, path, content, mode }, context) => {
+      const rejected = await requestApproval(
+        context,
+        "remote_write_file",
+        server,
+        createEditApproval("remote_write_file", { server, path, content, mode }),
+      )
+      if (rejected) {
+        return rejected
+      }
+
+      return serialize(orchestrator.remoteWriteFile({ server, path, content, mode }))
+    },
   }),
   remote_patch_file: tool({
     description: "Apply a unified diff to a remote file.",
@@ -60,8 +159,19 @@ const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
       path: tool.schema.string(),
       patch: tool.schema.string(),
     },
-    execute: async ({ server, path, patch }) =>
-      serialize(orchestrator.remotePatchFile({ server, path, patch })),
+    execute: async ({ server, path, patch }, context) => {
+      const rejected = await requestApproval(
+        context,
+        "remote_patch_file",
+        server,
+        createEditApproval("remote_patch_file", { server, path, patch }),
+      )
+      if (rejected) {
+        return rejected
+      }
+
+      return serialize(orchestrator.remotePatchFile({ server, path, patch }))
+    },
   }),
   remote_list_dir: tool({
     description: "List a remote directory.",

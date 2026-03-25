@@ -13,5 +13,6 @@ export const runtimePaths = {
 
 export const ensureRuntimeDirs = async () => {
   await mkdir(`${runtimePaths.dataDir}/audit`, { recursive: true })
+  await mkdir(runtimePaths.auditRepoDir, { recursive: true })
   await mkdir(runtimePaths.configDir, { recursive: true })
 }

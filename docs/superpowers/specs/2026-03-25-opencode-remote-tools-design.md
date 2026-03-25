@@ -42,7 +42,7 @@ AI coding CLIs are useful for local development, but infrastructure and operatio
 
 ## Scope Summary
 
-V1 is a terminal plugin for `opencode` backed by a local core service/library. The plugin defines explicit remote tools. The core handles encrypted credentials, SSH execution, policy enforcement, audit logging, and local git snapshots for dedicated file-write operations.
+V1 is a terminal plugin for `opencode` backed by a host-agnostic local core library that runs in-process with the plugin. The plugin defines explicit remote tools. The core handles encrypted credentials, SSH execution, policy enforcement, audit logging, and local git snapshots for dedicated file-write operations.
 
 ## Architecture
 
@@ -52,6 +52,8 @@ The system is split into two layers:
 
 1. `opencode` host adapter
 2. host-agnostic local core
+
+In v1, the local core is an in-process library rather than a separate background daemon or long-lived local service. This keeps packaging, lifecycle, and approval flow simple for the first release while preserving clear boundaries that can later be extracted behind an IPC layer if needed.
 
 The `opencode` adapter is responsible for:
 
@@ -189,6 +191,15 @@ The runtime may reject requests that are malformed or unsupported, such as:
 
 Policy classification must be deterministic and rule-based. V1 must not rely on a model to decide whether a command is safe. The model may propose commands, but the core decides whether they run directly, require approval, or are rejected.
 
+For `remote_exec`, the auto-allow path is intentionally narrow. Only simple invocations of allowlisted Linux inspection commands may bypass approval. Commands that include shell composition or higher-risk syntax must default to `approval-required`, including:
+
+- pipes,
+- redirection,
+- command chaining,
+- subshells,
+- compound shell expressions,
+- other command forms that require shell parsing beyond a single straightforward invocation.
+
 ## Credential Model
 
 ### Storage
@@ -210,6 +221,8 @@ Supported v1 authentication methods:
 
 - username plus password,
 - imported private key or certificate material.
+
+The registry encryption key should be protected by a client-controlled unlock mechanism such as an OS keychain entry or an equivalent local secret source selected during implementation. The design requirement is that registry decryption stays on the client machine and is independent of the model runtime.
 
 ### Isolation Requirements
 
@@ -249,6 +262,8 @@ Every tool action writes a structured local log entry that includes:
 
 Sensitive values must be redacted before persistence.
 
+Action logging is a hard requirement, not a best-effort feature. Before any remote operation runs, the runtime must verify that the action log sink is writable. If structured logging cannot be persisted, the tool call must fail closed and the remote action must not execute.
+
 ### Git-Backed File Snapshot Audit
 
 Dedicated file mutation tools participate in local git-backed snapshotting.
@@ -262,6 +277,10 @@ For `remote_write_file` and `remote_patch_file`, the audit flow is:
 5. commit the snapshot change into a local git repository.
 
 This repository exists only on the client machine and is used for inspection, history, and rollback support.
+
+For dedicated file mutation tools, snapshotting is also a hard requirement. Before a mutating file action executes, the runtime must verify that the snapshot workspace and local git repository are writable. If pre-change snapshot preparation cannot succeed, the write must not run.
+
+If the remote write succeeds but post-change snapshot persistence or git commit creation fails, the tool result must be returned as a partial failure rather than a clean success. The result must make clear that the remote state changed but audit completion failed, so the user can treat the operation as security-relevant follow-up work.
 
 ### Limit Of Audit Guarantees
 

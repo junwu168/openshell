@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { dirname } from "node:path"
 import { decryptJson, encryptJson, type EncryptedJsonPayload } from "./crypto"
@@ -49,17 +49,37 @@ export interface ServerRegistry {
 export interface CreateServerRegistryOptions {
   registryFile: string
   secretProvider: SecretProvider
+  lockOptions?: {
+    retryMs?: number
+    timeoutMs?: number
+  }
 }
 
 export const createServerRegistry = ({
   registryFile,
   secretProvider,
+  lockOptions,
 }: CreateServerRegistryOptions): ServerRegistry => {
-  const lockRetryMs = 10
-  const lockStaleMs = 30_000
-  const lockTimeoutMs = 5_000
+  const lockRetryMs = lockOptions?.retryMs ?? 10
+  const lockTimeoutMs = lockOptions?.timeoutMs ?? 5_000
   let writeQueue = Promise.resolve()
   const lockFile = `${registryFile}.lock`
+
+  const isProcessAlive = (pid: number) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === "ESRCH") {
+        return false
+      }
+      if (code === "EPERM") {
+        return true
+      }
+      throw error
+    }
+  }
 
   const load = async (): Promise<ServerRecord[]> => {
     try {
@@ -102,13 +122,57 @@ export const createServerRegistry = ({
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
+  const tryReclaimAbandonedLock = async () => {
+    let raw: string
+    try {
+      raw = await readFile(lockFile, "utf8")
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return false
+      }
+      throw error
+    }
+
+    let ownerPid: number | null = null
+    try {
+      const parsed = JSON.parse(raw) as { pid?: unknown }
+      ownerPid = typeof parsed.pid === "number" ? parsed.pid : null
+    } catch {
+      return false
+    }
+
+    if (ownerPid === null || isProcessAlive(ownerPid)) {
+      return false
+    }
+
+    const reclaimedLockFile = `${lockFile}.reclaimed.${randomUUID()}`
+    try {
+      await rename(lockFile, reclaimedLockFile)
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return false
+      }
+      throw error
+    }
+
+    await rm(reclaimedLockFile, { force: true })
+    return true
+  }
+
   const withRegistryWriteLock = async <T>(operation: () => Promise<T>): Promise<T> => {
     const startedAt = Date.now()
+    await mkdir(dirname(registryFile), { recursive: true })
 
     while (true) {
       try {
         const handle = await open(lockFile, "wx")
         try {
+          await handle.writeFile(
+            JSON.stringify({
+              pid: process.pid,
+              createdAt: new Date().toISOString(),
+            }),
+          )
           return await operation()
         } finally {
           await handle.close()
@@ -120,16 +184,7 @@ export const createServerRegistry = ({
         }
       }
 
-      try {
-        const lockStat = await stat(lockFile)
-        if (Date.now() - lockStat.mtimeMs > lockStaleMs) {
-          await rm(lockFile, { force: true })
-          continue
-        }
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw error
-        }
+      if (await tryReclaimAbandonedLock()) {
         continue
       }
 

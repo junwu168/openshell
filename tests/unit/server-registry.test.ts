@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -269,14 +269,12 @@ describe("server registry", () => {
     expect(await reloadedRegistry.list()).toEqual([firstRecord, secondRecord])
   })
 
-  test("recovers from a stale lock file left on disk", async () => {
+  test("recovers from a dead lock owner left on disk", async () => {
     const registryFile = join(tempDir, "servers.enc.json")
     const lockFile = `${registryFile}.lock`
     const registry = createRegistry(registryFile)
 
-    await writeFile(lockFile, "stale")
-    const staleTime = new Date(Date.now() - 60_000)
-    await utimes(lockFile, staleTime, staleTime)
+    await writeFile(lockFile, JSON.stringify({ pid: 999999, createdAt: new Date(0).toISOString() }))
 
     const record: ServerRecord = {
       id: "prod-a",
@@ -289,5 +287,30 @@ describe("server registry", () => {
     await registry.upsert(record)
 
     expect(await registry.list()).toEqual([record])
+  })
+
+  test("times out when a live lock owner keeps the registry busy", async () => {
+    const registryFile = join(tempDir, "servers.enc.json")
+    const lockFile = `${registryFile}.lock`
+    const registry = createServerRegistry({
+      registryFile,
+      secretProvider: { getMasterKey: async () => masterKey },
+      lockOptions: {
+        retryMs: 5,
+        timeoutMs: 40,
+      },
+    })
+
+    await writeFile(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }))
+
+    await expect(
+      registry.upsert({
+        id: "prod-a",
+        host: "10.0.0.10",
+        port: 22,
+        username: "root",
+        auth: { kind: "password", secret: "super-secret" },
+      }),
+    ).rejects.toThrow("Timed out waiting for registry lock")
   })
 })

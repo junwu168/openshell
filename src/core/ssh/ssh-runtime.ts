@@ -57,21 +57,50 @@ export const createSshRuntime = () => {
     withClient<ExecResult>(connection, (client) =>
       new Promise((resolve, reject) => {
         const effective = options.cwd ? `cd ${shell.quote(options.cwd)} && ${command}` : command
+        let settled = false
+        let streamRef: {
+          signal: (signalName: string) => void
+          close: () => void
+        } | null = null
+
+        const finish = (handler: () => void) => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+
+          if (timer) {
+            clearTimeout(timer)
+          }
+
+          handler()
+        }
+
         const timer =
           options.timeout === undefined
             ? null
             : setTimeout(() => {
-                reject(new Error(`command timed out after ${options.timeout}ms`))
+                if (streamRef) {
+                  try {
+                    streamRef.signal("SIGKILL")
+                  } catch {}
+
+                  try {
+                    streamRef.close()
+                  } catch {}
+                }
+
+                finish(() => reject(new Error(`command timed out after ${options.timeout}ms`)))
               }, options.timeout)
 
         client.exec(effective, (error, stream) => {
           if (error) {
-            if (timer) {
-              clearTimeout(timer)
-            }
-            reject(error)
+            finish(() => reject(error))
             return
           }
+
+          streamRef = stream
 
           let stdout = ""
           let stderr = ""
@@ -90,17 +119,11 @@ export const createSshRuntime = () => {
           })
 
           stream.on("close", () => {
-            if (timer) {
-              clearTimeout(timer)
-            }
-            resolve({ stdout, stderr, exitCode })
+            finish(() => resolve({ stdout, stderr, exitCode }))
           })
 
           stream.on("error", (streamError: Error) => {
-            if (timer) {
-              clearTimeout(timer)
-            }
-            reject(streamError)
+            finish(() => reject(streamError))
           })
         })
       }),

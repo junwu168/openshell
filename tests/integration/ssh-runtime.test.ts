@@ -34,6 +34,22 @@ describe("ssh runtime", () => {
     )
   })
 
+  test("does not allow timed out commands to mutate remote state later", async () => {
+    await runtime.writeFile(server.connection, "/tmp/open-code/app.conf", "port=80\n")
+
+    await expect(
+      runtime.exec(
+        server.connection,
+        "sh -lc \"sleep 1; echo late >> /tmp/open-code/app.conf\"",
+        { timeout: 100 },
+      ),
+    ).rejects.toThrow("command timed out after 100ms")
+
+    await Bun.sleep(1_500)
+
+    expect(await runtime.readFile(server.connection, "/tmp/open-code/app.conf")).toBe("port=80\n")
+  })
+
   test("writes and reads a remote file through sftp", async () => {
     await runtime.writeFile(server.connection, "/tmp/open-code/app.conf", "port=80\n")
 

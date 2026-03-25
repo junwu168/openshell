@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "@opencode-ai/plugin": "1.2.20",
+    "diff": "*",
+    "env-paths": "*",
+    "keytar": "*",
+    "shescape": "*",
+    "ssh2": "*"
+  }
+}

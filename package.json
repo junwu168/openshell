@@ -1,0 +1,30 @@
+{
+  "name": "open-code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "*",
+    "diff": "*",
+    "env-paths": "*",
+    "keytar": "*",
+    "shescape": "*",
+    "ssh2": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "*",
+    "testcontainers": "*",
+    "typescript": "*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  }
+}

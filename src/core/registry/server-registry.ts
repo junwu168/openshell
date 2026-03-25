@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { link, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { dirname } from "node:path"
@@ -203,24 +203,29 @@ export const createServerRegistry = ({
     await mkdir(dirname(registryFile), { recursive: true })
 
     while (true) {
+      const pendingLockFile = `${lockFile}.${process.pid}.${randomUUID()}.pending`
       try {
-        const handle = await open(lockFile, "wx")
+        await writeFile(
+          pendingLockFile,
+          JSON.stringify({
+            pid: process.pid,
+            createdAt: new Date().toISOString(),
+          }),
+        )
+
+        await link(pendingLockFile, lockFile)
+
         try {
-          await handle.writeFile(
-            JSON.stringify({
-              pid: process.pid,
-              createdAt: new Date().toISOString(),
-            }),
-          )
           return await operation()
         } finally {
-          await handle.close()
           await rm(lockFile, { force: true })
         }
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
           throw error
         }
+      } finally {
+        await rm(pendingLockFile, { force: true })
       }
 
       if (await tryReclaimAbandonedLock()) {

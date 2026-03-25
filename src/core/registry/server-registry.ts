@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { dirname } from "node:path"
 import { decryptJson, encryptJson, type EncryptedJsonPayload } from "./crypto"
@@ -55,6 +55,9 @@ export const createServerRegistry = ({
   registryFile,
   secretProvider,
 }: CreateServerRegistryOptions): ServerRegistry => {
+  const lockRetryMs = 10
+  const lockStaleMs = 30_000
+  const lockTimeoutMs = 5_000
   let writeQueue = Promise.resolve()
   const lockFile = `${registryFile}.lock`
 
@@ -100,6 +103,8 @@ export const createServerRegistry = ({
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
   const withRegistryWriteLock = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now()
+
     while (true) {
       try {
         const handle = await open(lockFile, "wx")
@@ -115,7 +120,24 @@ export const createServerRegistry = ({
         }
       }
 
-      await sleep(10)
+      try {
+        const lockStat = await stat(lockFile)
+        if (Date.now() - lockStat.mtimeMs > lockStaleMs) {
+          await rm(lockFile, { force: true })
+          continue
+        }
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error
+        }
+        continue
+      }
+
+      if (Date.now() - startedAt > lockTimeoutMs) {
+        throw new Error(`Timed out waiting for registry lock: ${lockFile}`)
+      }
+
+      await sleep(lockRetryMs)
     }
   }
 

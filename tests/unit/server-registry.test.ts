@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -267,5 +267,27 @@ describe("server registry", () => {
 
     const reloadedRegistry = createRegistry(registryFile)
     expect(await reloadedRegistry.list()).toEqual([firstRecord, secondRecord])
+  })
+
+  test("recovers from a stale lock file left on disk", async () => {
+    const registryFile = join(tempDir, "servers.enc.json")
+    const lockFile = `${registryFile}.lock`
+    const registry = createRegistry(registryFile)
+
+    await writeFile(lockFile, "stale")
+    const staleTime = new Date(Date.now() - 60_000)
+    await utimes(lockFile, staleTime, staleTime)
+
+    const record: ServerRecord = {
+      id: "prod-a",
+      host: "10.0.0.10",
+      port: 22,
+      username: "root",
+      auth: { kind: "password", secret: "super-secret" },
+    }
+
+    await registry.upsert(record)
+
+    expect(await registry.list()).toEqual([record])
   })
 })

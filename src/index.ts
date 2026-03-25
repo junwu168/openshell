@@ -1,2 +1,2 @@
-export const OpenCodePlugin = async () => ({})
+export { OpenCodePlugin } from "./opencode/plugin"
 export * from "./core/contracts"

@@ -1,5 +1,3 @@
-import type { PolicyDecision } from "./contracts"
-
 const SAFE_COMMANDS = new Set(["cat", "grep", "find", "ls", "pwd", "uname", "df", "free", "ps"])
 const MIDDLEWARE_COMMANDS = new Set([
   "psql",
@@ -21,17 +19,12 @@ export const classifyRemoteExec = (command: string) => {
     return { decision: "approval-required", reason: "shell composition" } as const
   }
 
-  const [binary] = trimmed.split(/\s+/)
+  const [binary, subcommand] = trimmed.split(/\s+/)
   if (MIDDLEWARE_COMMANDS.has(binary)) {
     return { decision: "approval-required", reason: "middleware command" } as const
   }
-  if (SAFE_COMMANDS.has(binary) || trimmed.startsWith("systemctl status")) {
+  if (SAFE_COMMANDS.has(binary) || (binary === "systemctl" && subcommand === "status")) {
     return { decision: "auto-allow", reason: "safe inspection command" } as const
   }
   return { decision: "approval-required", reason: "unknown command" } as const
-}
-
-export type RemoteExecClassification = {
-  decision: PolicyDecision
-  reason: string
 }

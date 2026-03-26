@@ -9,6 +9,7 @@ import {
   type ServerRecord,
   type ServerRegistry,
 } from "../core/registry/server-registry.js"
+import { createWorkspaceTracker, type WorkspaceTracker } from "../product/workspace-tracker.js"
 
 type PromptAdapter = {
   text(message: string, defaultValue?: string): Promise<string>
@@ -23,6 +24,7 @@ type WritableLike = {
 
 type CliDeps = {
   registry: Pick<ServerRegistry, "list" | "resolve" | "listRaw" | "upsert" | "remove">
+  workspaceTracker?: Pick<WorkspaceTracker, "record" | "remove">
   prompt: PromptAdapter
   stdout: WritableLike
   stderr: WritableLike
@@ -140,6 +142,7 @@ const createDefaultDeps = async (): Promise<CliDeps> => {
       workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
       workspaceRoot,
     }),
+    workspaceTracker: createWorkspaceTracker(`${runtimePaths.dataDir}/workspaces.json`),
     prompt: createConsolePrompt(),
     stdout: { write: (chunk) => stdout.write(chunk) },
     stderr: { write: (chunk) => stderr.write(chunk) },
@@ -344,6 +347,13 @@ const handleAdd = async (deps: CliDeps, idArg?: string) => {
     auth,
   } as ServerRecord)
 
+  if (scope === "workspace") {
+    await deps.workspaceTracker?.record({
+      workspaceRoot: deps.workspaceRoot,
+      managedPath: `${deps.workspaceRoot}/.open-code`,
+    })
+  }
+
   deps.stdout.write(`Saved server ${id} (${host}:${port}).\n`)
   return 0
 }
@@ -422,6 +432,13 @@ const handleRemove = async (deps: CliDeps, idArg?: string) => {
   if (!removed) {
     deps.stderr.write(`Server ${id} not found in ${scope}.\n`)
     return 1
+  }
+
+  if (scope === "workspace") {
+    const remainingWorkspaceRecords = await deps.registry.listRaw("workspace")
+    if (remainingWorkspaceRecords.length === 0) {
+      await deps.workspaceTracker?.remove(deps.workspaceRoot)
+    }
   }
 
   deps.stdout.write(`Removed server ${id} from ${scope}.\n`)

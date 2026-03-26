@@ -498,6 +498,46 @@ describe("server registry cli", () => {
     ])
   })
 
+  test("adding a workspace-scoped server records the managed workspace path", async () => {
+    const workspaceRoot = await createWorkspaceRoot(true)
+    const registry = createInMemoryRegistry()
+    const trackerCalls: Array<{ workspaceRoot: string; managedPath: string }> = []
+    const prompt = createPrompt((call) => {
+      if (call.kind === "text" && call.message.includes("Server id")) return "prod-a"
+      if (call.kind === "text" && call.message.includes("Scope")) return "workspace"
+      if (call.kind === "text" && call.message.includes("Host")) return "10.0.0.10"
+      if (call.kind === "text" && call.message.includes("Port")) return "22"
+      if (call.kind === "text" && call.message.includes("Username")) return "root"
+      if (call.kind === "text" && call.message.includes("Labels")) return ""
+      if (call.kind === "text" && call.message.includes("Groups")) return ""
+      if (call.kind === "text" && call.message.includes("Auth kind")) return "password"
+      if (call.kind === "password") return "super-secret"
+      return ""
+    })
+
+    await expect(
+      runCli(["add"], {
+        registry,
+        prompt,
+        stdout: createWritable(),
+        stderr: createWritable(),
+        workspaceRoot,
+        workspaceTracker: {
+          record: async (entry: { workspaceRoot: string; managedPath: string }) => {
+            trackerCalls.push(entry)
+          },
+        },
+      }),
+    ).resolves.toBe(0)
+
+    expect(trackerCalls).toEqual([
+      {
+        workspaceRoot,
+        managedPath: `${workspaceRoot}/.open-code`,
+      },
+    ])
+  })
+
   test("prompts which scope to remove from when the same id exists in both configs", async () => {
     const workspaceRoot = await createWorkspaceRoot(true)
     const registry = createInMemoryRegistry({

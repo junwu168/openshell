@@ -3,15 +3,19 @@ import { mkdir } from "node:fs/promises"
 import { cwd } from "node:process"
 
 export const createRuntimePaths = (workspaceRoot: string) => {
-  const paths = envPaths("open-code", { suffix: "" })
+  const openshellPaths = envPaths("openshell", { suffix: "" })
+  const opencodePaths = envPaths("opencode", { suffix: "" })
 
   return {
-    configDir: paths.config,
-    dataDir: paths.data,
-    globalRegistryFile: `${paths.config}/servers.json`,
+    configDir: openshellPaths.config,
+    dataDir: openshellPaths.data,
+    globalRegistryFile: `${openshellPaths.config}/servers.json`,
+    opencodeConfigDir: opencodePaths.config,
+    opencodeConfigFile: `${opencodePaths.config}/opencode.json`,
+    workspaceRegistryDir: `${workspaceRoot}/.open-code`,
     workspaceRegistryFile: `${workspaceRoot}/.open-code/servers.json`,
-    auditLogFile: `${paths.data}/audit/actions.jsonl`,
-    auditRepoDir: `${paths.data}/audit/repo`,
+    auditLogFile: `${openshellPaths.data}/audit/actions.jsonl`,
+    auditRepoDir: `${openshellPaths.data}/audit/repo`,
   }
 }
 

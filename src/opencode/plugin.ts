@@ -3,8 +3,7 @@ import { createAuditLogStore } from "../core/audit/log-store"
 import { createGitAuditRepo } from "../core/audit/git-audit-repo"
 import { createOrchestrator } from "../core/orchestrator"
 import { classifyRemoteExec } from "../core/policy"
-import { ensureRuntimeDirs, runtimePaths } from "../core/paths"
-import { createKeychainSecretProvider } from "../core/registry/keychain-provider"
+import { ensureRuntimeDirs, runtimePaths, workspaceRegistryFile } from "../core/paths"
 import { createServerRegistry } from "../core/registry/server-registry"
 import { errorResult } from "../core/result"
 import { createSshRuntime } from "../core/ssh/ssh-runtime"
@@ -207,9 +206,11 @@ const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
 })
 
 const buildRuntimeDependencies = (): RuntimeDependencies => {
+  const workspaceRoot = process.cwd()
   const registry = createServerRegistry({
-    registryFile: runtimePaths.registryFile,
-    secretProvider: createKeychainSecretProvider(),
+    globalRegistryFile: runtimePaths.globalRegistryFile,
+    workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
+    workspaceRoot,
   })
   const auditLog = createAuditLogStore(runtimePaths.auditLogFile)
   const auditRepo = createGitAuditRepo(runtimePaths.auditRepoDir)

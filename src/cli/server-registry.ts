@@ -1,7 +1,6 @@
 import { createInterface } from "node:readline/promises"
 import { stdin, stdout, stderr } from "node:process"
-import { ensureRuntimeDirs, runtimePaths } from "../core/paths.js"
-import { createKeychainSecretProvider } from "../core/registry/keychain-provider.js"
+import { ensureRuntimeDirs, runtimePaths, workspaceRegistryFile } from "../core/paths.js"
 import { createServerRegistry, type ServerRecord, type ServerRegistry } from "../core/registry/server-registry.js"
 
 type PromptAdapter = {
@@ -125,11 +124,13 @@ const createConsolePrompt = (): PromptAdapter => {
 
 const createDefaultDeps = async (): Promise<CliDeps> => {
   await ensureRuntimeDirs()
+  const workspaceRoot = process.cwd()
 
   return {
     registry: createServerRegistry({
-      registryFile: runtimePaths.registryFile,
-      secretProvider: createKeychainSecretProvider(),
+      globalRegistryFile: runtimePaths.globalRegistryFile,
+      workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
+      workspaceRoot,
     }),
     prompt: createConsolePrompt(),
     stdout: { write: (chunk) => stdout.write(chunk) },
@@ -175,7 +176,7 @@ const handleAdd = async (deps: CliDeps, idArg?: string) => {
     return 1
   }
 
-  await deps.registry.upsert({
+  await deps.registry.upsert("workspace", {
     id,
     host,
     port,
@@ -241,7 +242,7 @@ const handleRemove = async (deps: CliDeps, idArg?: string) => {
     return 0
   }
 
-  await deps.registry.remove(id)
+  await deps.registry.remove("workspace", id)
   deps.stdout.write(`Removed server ${id}.\n`)
   return 0
 }

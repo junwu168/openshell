@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import type { ConnectConfig } from "ssh2"
 import type { PolicyDecision, ToolPayload, ToolResult } from "./contracts"
 import { applyUnifiedPatch } from "./patch"
@@ -112,14 +113,12 @@ const toConnectConfig = (server: ServerRecord): ConnectConfig => {
     case "privateKey":
       return {
         ...base,
-        privateKey: server.auth.privateKey,
-        passphrase: server.auth.passphrase,
+        privateKey: readFileSync(server.auth.privateKeyPath, "utf8"),
       }
     case "certificate":
       return {
         ...base,
-        privateKey: server.auth.privateKey,
-        passphrase: server.auth.passphrase,
+        privateKey: readFileSync(server.auth.privateKeyPath, "utf8"),
       }
   }
 }

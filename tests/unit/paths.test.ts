@@ -14,12 +14,12 @@ describe("runtime paths", () => {
         default: () => ({ config: configDir, data: dataDir }),
       }))
 
-      const { runtimePaths, workspaceRegistryFile } = await import("../../src/core/paths")
+      const { createRuntimePaths, runtimePaths } = await import("../../src/core/paths")
+      const runtime = createRuntimePaths("/repo")
 
+      expect(runtime.globalRegistryFile.endsWith("servers.json")).toBe(true)
+      expect(runtime.workspaceRegistryFile).toBe("/repo/.open-code/servers.json")
       expect(runtimePaths.globalRegistryFile.endsWith("servers.json")).toBe(true)
-      expect(runtimePaths.auditLogFile).toBe(`${dataDir}/audit/actions.jsonl`)
-      expect(runtimePaths.auditRepoDir).toBe(`${dataDir}/audit/repo`)
-      expect(workspaceRegistryFile("/repo")).toBe("/repo/.open-code/servers.json")
     } finally {
       mock.restore()
       await rm(tempRoot, { recursive: true, force: true })

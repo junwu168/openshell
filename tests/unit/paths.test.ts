@@ -6,10 +6,11 @@ import { tmpdir } from "node:os"
 describe("runtime paths", () => {
   test("runtime paths use openshell app directories and expose OpenCode config", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "opencode-paths-"))
+    const previousXdgConfigHome = process.env.XDG_CONFIG_HOME
     try {
       const openshellConfigDir = join(tempRoot, "openshell-config")
       const openshellDataDir = join(tempRoot, "openshell-data")
-      const opencodeConfigDir = join(tempRoot, "opencode-config")
+      const opencodeConfigDir = join(tempRoot, "xdg-config", "opencode")
 
       mock.module("env-paths", () => ({
         default: (name: string) => {
@@ -17,13 +18,10 @@ describe("runtime paths", () => {
             return { config: openshellConfigDir, data: openshellDataDir }
           }
 
-          if (name === "opencode") {
-            return { config: opencodeConfigDir, data: join(tempRoot, "opencode-data") }
-          }
-
           throw new Error(`unexpected env-paths name: ${name}`)
         },
       }))
+      process.env.XDG_CONFIG_HOME = join(tempRoot, "xdg-config")
 
       const { createRuntimePaths, runtimePaths } = await import("../../src/core/paths?runtime-paths-test-1")
       const runtime = createRuntimePaths("/repo")
@@ -36,6 +34,11 @@ describe("runtime paths", () => {
       expect(runtime.opencodeConfigFile).toBe(join(opencodeConfigDir, "opencode.json"))
       expect(runtimePaths.globalRegistryFile.endsWith("servers.json")).toBe(true)
     } finally {
+      if (previousXdgConfigHome === undefined) {
+        delete process.env.XDG_CONFIG_HOME
+      } else {
+        process.env.XDG_CONFIG_HOME = previousXdgConfigHome
+      }
       mock.restore()
       await rm(tempRoot, { recursive: true, force: true })
     }

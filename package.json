@@ -2,7 +2,10 @@
   "name": "@junwu168/openshell",
   "version": "0.1.4",
   "type": "module",
+  "main": "./index.js",
+  "types": "./dist/index.d.ts",
   "files": [
+    "index.js",
     "dist",
     "README.md"
   ],
@@ -11,7 +14,7 @@
   },
   "exports": {
     ".": {
-      "bun": "./src/index.ts",
+      "bun": "./dist/index.js",
       "default": "./dist/index.js"
     }
   },

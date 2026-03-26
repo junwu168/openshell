@@ -33,6 +33,8 @@ describe("build layout", () => {
 
     expect(packageJson.name).toBe("@junwu168/openshell")
     expect(packageJson.private).not.toBe(true)
+    expect(packageJson.main).toBe("./index.js")
+    expect(packageJson.types).toBe("./dist/index.d.ts")
     expect(packageJson.bin).toEqual({
       openshell: "./dist/cli/openshell.js",
     })
@@ -41,7 +43,7 @@ describe("build layout", () => {
   test("package metadata publishes built artifacts and builds before pack", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"))
 
-    expect(packageJson.files).toEqual(expect.arrayContaining(["dist"]))
+    expect(packageJson.files).toEqual(expect.arrayContaining(["index.js", "dist"]))
     expect(packageJson.scripts.prepack).toBe("npm run build")
   })
 
@@ -49,6 +51,7 @@ describe("build layout", () => {
     const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"))
     const tsconfig = JSON.parse(await readFile(new URL("../../tsconfig.json", import.meta.url), "utf8"))
 
+    expect(packageJson.exports["."].bun).toBe("./dist/index.js")
     expect(packageJson.exports["."].default).toBe("./dist/index.js")
     expect(tsconfig.compilerOptions.rootDir).toBe("src")
   })

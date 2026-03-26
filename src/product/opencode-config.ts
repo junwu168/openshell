@@ -96,9 +96,23 @@ export const uninstallFromOpenCodeConfig = async (opencodeConfigFile: string) =>
     }
   }
 
-  await writeConfig(opencodeConfigFile, {
-    ...current,
-    ...(plugins.length > 0 ? { plugin: plugins } : {}),
-    ...(Object.keys(currentPermissions).length > 0 ? { permission: currentPermissions } : {}),
-  })
+  if (currentPermissions.edit === "ask") {
+    delete currentPermissions.edit
+  }
+
+  const nextConfig: OpenCodeConfig = { ...current }
+
+  if (plugins.length > 0) {
+    nextConfig.plugin = plugins
+  } else {
+    delete nextConfig.plugin
+  }
+
+  if (Object.keys(currentPermissions).length > 0) {
+    nextConfig.permission = currentPermissions
+  } else {
+    delete nextConfig.permission
+  }
+
+  await writeConfig(opencodeConfigFile, nextConfig)
 }

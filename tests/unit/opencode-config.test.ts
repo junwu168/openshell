@@ -71,4 +71,30 @@ describe("opencode config integration", () => {
       "kubectl *": "ask",
     })
   })
+
+  test("uninstall removes the plugin key when openshell was the only registered plugin", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "openshell-opencode-config-"))
+    tempDirs.push(tempDir)
+    const opencodeConfigFile = join(tempDir, "opencode.json")
+    await writeFile(
+      opencodeConfigFile,
+      JSON.stringify({
+        plugin: ["@junwu168/openshell"],
+        permission: {
+          edit: "ask",
+          bash: {
+            "*": "ask",
+            "cat *": "allow",
+          },
+        },
+      }),
+    )
+
+    const { uninstallFromOpenCodeConfig } = await import("../../src/product/opencode-config")
+    await uninstallFromOpenCodeConfig(opencodeConfigFile)
+
+    const merged = JSON.parse(await readFile(opencodeConfigFile, "utf8"))
+    expect(merged.plugin).toBeUndefined()
+    expect(merged.permission).toBeUndefined()
+  })
 })

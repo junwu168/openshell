@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { access, mkdtemp, readFile, rm } from "node:fs/promises"
 import { chdir, cwd } from "node:process"
 import type { ToolContext } from "@opencode-ai/plugin"
 import { join } from "node:path"
@@ -56,6 +56,15 @@ const createToolContext = (overrides: Partial<ToolContext> = {}): ToolContext =>
   ask: async () => {},
   ...overrides,
 })
+
+const exists = async (path: URL) => {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
 
 describe("OpenCode plugin", () => {
   test("registers explicit remote tools in plan order and serializes results", async () => {
@@ -338,13 +347,12 @@ describe("OpenCode plugin", () => {
     expect(config.permission.remote_exec).toBeUndefined()
   })
 
-  test("keeps the checked-in smoke package free of keytar", async () => {
-    const packageJsonRaw = await readFile(new URL("../../examples/opencode-local/.opencode/package.json", import.meta.url), "utf8")
-    const packageJson = JSON.parse(packageJsonRaw)
-    const bunLock = await readFile(new URL("../../examples/opencode-local/.opencode/bun.lock", import.meta.url), "utf8")
-
-    expect(packageJsonRaw).not.toContain("keytar")
-    expect(packageJson.dependencies.keytar).toBeUndefined()
-    expect(bunLock).not.toContain('"keytar"')
+  test("removes the checked-in local smoke package in favor of the global install flow", async () => {
+    expect(
+      await exists(new URL("../../examples/opencode-local/.opencode/package.json", import.meta.url)),
+    ).toBe(false)
+    expect(
+      await exists(new URL("../../examples/opencode-local/.opencode/bun.lock", import.meta.url)),
+    ).toBe(false)
   })
 })

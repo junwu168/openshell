@@ -3,7 +3,6 @@
     "@opencode-ai/plugin": "1.3.0",
     "diff": "*",
     "env-paths": "*",
-    "keytar": "*",
     "shescape": "*",
     "ssh2": "*"
   }

@@ -337,4 +337,14 @@ describe("OpenCode plugin", () => {
     expect(config.permission.remote_write_file).toBeUndefined()
     expect(config.permission.remote_exec).toBeUndefined()
   })
+
+  test("keeps the checked-in smoke package free of keytar", async () => {
+    const packageJsonRaw = await readFile(new URL("../../examples/opencode-local/.opencode/package.json", import.meta.url), "utf8")
+    const packageJson = JSON.parse(packageJsonRaw)
+    const bunLock = await readFile(new URL("../../examples/opencode-local/.opencode/bun.lock", import.meta.url), "utf8")
+
+    expect(packageJsonRaw).not.toContain("keytar")
+    expect(packageJson.dependencies.keytar).toBeUndefined()
+    expect(bunLock).not.toContain('"keytar"')
+  })
 })

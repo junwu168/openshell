@@ -304,6 +304,66 @@ describe("server registry", () => {
     ])
   })
 
+  test("two registry instances contend for the same file without losing records", async () => {
+    const lockFile = `${workspaceRegistryFile}.lock`
+    let releaseProcessStartTime!: () => void
+    let firstBlocked!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      firstBlocked = resolve
+    })
+
+    const firstRegistry = createServerRegistry({
+      globalRegistryFile,
+      workspaceRegistryFile,
+      workspaceRoot,
+      lockOptions: {
+        getProcessStartTime: async (pid) => {
+          if (pid === process.pid) {
+            await new Promise<void>((resolve) => {
+              releaseProcessStartTime = resolve
+              firstBlocked()
+            })
+          }
+
+          return Date.now()
+        },
+      },
+    })
+    const secondRegistry = createRegistry()
+
+    await writeFile(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date(0).toISOString() }))
+
+    const firstRecord = {
+      id: "prod-a",
+      host: "10.0.0.10",
+      port: 22,
+      username: "root",
+      auth: { kind: "password", secret: "super-secret" },
+    }
+    const secondRecord = {
+      id: "prod-b",
+      host: "10.0.0.11",
+      port: 22,
+      username: "deploy",
+      auth: {
+        kind: "privateKey",
+        privateKeyPath: "/keys/prod-b",
+      },
+    }
+
+    const firstUpsert = firstRegistry.upsert("workspace", firstRecord)
+    await blocked
+    const secondUpsert = secondRegistry.upsert("workspace", secondRecord)
+    releaseProcessStartTime()
+
+    await firstUpsert
+    await secondUpsert
+
+    const reloadedRegistry = createRegistry()
+    const ids = (await reloadedRegistry.list()).map((record) => record.id).sort()
+    expect(ids).toEqual(["prod-a", "prod-b"])
+  })
+
   test("reclaims a lock when the pid now belongs to a newer process", async () => {
     const lockFile = `${workspaceRegistryFile}.lock`
     const registry = createServerRegistry({

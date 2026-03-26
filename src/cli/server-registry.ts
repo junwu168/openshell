@@ -446,7 +446,13 @@ const handleRemove = async (deps: CliDeps, idArg?: string) => {
 }
 
 export const runServerRegistryCli = async (argv: string[], deps?: CliDeps) => {
-  const activeDeps = deps ?? (await createDefaultDeps())
+  let activeDeps: CliDeps
+  try {
+    activeDeps = deps ?? (await createDefaultDeps())
+  } catch (err) {
+    console.error(`Failed to initialize: ${err instanceof Error ? err.message : err}`)
+    return 1
+  }
 
   try {
     const [command, arg] = argv

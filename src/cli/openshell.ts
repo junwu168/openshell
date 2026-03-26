@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { stderr, stdout } from "node:process"
 import { runInstallCli } from "../product/install.js"
 import { runUninstallCli } from "../product/uninstall.js"

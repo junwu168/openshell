@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs"
 import { isAbsolute, resolve } from "node:path"
 import type { ConnectConfig } from "ssh2"
-import type { PolicyDecision, ToolPayload, ToolResult } from "./contracts"
-import { applyUnifiedPatch } from "./patch"
-import { classifyRemoteExec } from "./policy"
-import { errorResult, okResult, partialFailureResult } from "./result"
-import type { ResolvedServerRecord, ServerRecord, ServerRegistry } from "./registry/server-registry"
+import type { PolicyDecision, ToolPayload, ToolResult } from "./contracts.js"
+import { applyUnifiedPatch } from "./patch.js"
+import { classifyRemoteExec } from "./policy.js"
+import { errorResult, okResult, partialFailureResult } from "./result.js"
+import type { ResolvedServerRecord, ServerRecord, ServerRegistry } from "./registry/server-registry.js"
 
 type ExecResult = {
   stdout: string

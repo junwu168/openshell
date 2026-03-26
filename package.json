@@ -2,6 +2,10 @@
   "name": "@junwu168/openshell",
   "version": "0.1.0",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "bin": {
     "openshell": "./dist/cli/openshell.js"
   },
@@ -25,6 +29,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
     "openshell": "$npm_execpath scripts/openshell.ts",
     "server-registry": "$npm_execpath scripts/server-registry.ts",
     "typecheck": "tsc --noEmit",

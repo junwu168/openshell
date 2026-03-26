@@ -1,12 +1,12 @@
 import { tool, type Plugin, type ToolContext } from "@opencode-ai/plugin"
-import { createAuditLogStore } from "../core/audit/log-store"
-import { createGitAuditRepo } from "../core/audit/git-audit-repo"
-import { createOrchestrator } from "../core/orchestrator"
-import { classifyRemoteExec } from "../core/policy"
-import { createRuntimePaths, ensureRuntimeDirs } from "../core/paths"
-import { createServerRegistry } from "../core/registry/server-registry"
-import { errorResult } from "../core/result"
-import { createSshRuntime } from "../core/ssh/ssh-runtime"
+import { createAuditLogStore } from "../core/audit/log-store.js"
+import { createGitAuditRepo } from "../core/audit/git-audit-repo.js"
+import { createOrchestrator } from "../core/orchestrator.js"
+import { classifyRemoteExec } from "../core/policy.js"
+import { createRuntimePaths, ensureRuntimeDirs } from "../core/paths.js"
+import { createServerRegistry } from "../core/registry/server-registry.js"
+import { errorResult } from "../core/result.js"
+import { createSshRuntime } from "../core/ssh/ssh-runtime.js"
 
 const serialize = async <T>(result: Promise<T>) => JSON.stringify(await result)
 type RuntimeDependencies = Parameters<typeof createOrchestrator>[0]

@@ -1,6 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises"
 import { dirname } from "node:path"
-import { redactSecrets } from "./redact"
+import { redactSecrets } from "./redact.js"
 
 export const createAuditLogStore = (file: string) => ({
   async preflight() {

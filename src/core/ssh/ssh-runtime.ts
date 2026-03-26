@@ -151,7 +151,7 @@ export const createSshRuntime = (options: RuntimeOptions = {}) => {
             stderr += chunk.toString()
           })
 
-          stream.on("exit", (code, signal) => {
+          stream.on("exit", (code: number | null, signal: string | null) => {
             exitCode = code ?? signalToExitCode(signal)
           })
 

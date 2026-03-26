@@ -1,4 +1,4 @@
-import type { ToolPayload, ToolResult } from "./contracts"
+import type { ToolPayload, ToolResult } from "./contracts.js"
 
 export const okResult = <T>(payload: ToolPayload<T>): ToolResult<T> => ({
   ...payload,

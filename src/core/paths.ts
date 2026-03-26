@@ -1,15 +1,22 @@
 import envPaths from "env-paths"
 import { mkdir } from "node:fs/promises"
 
-const paths = envPaths("open-code", { suffix: "" })
+export const createRuntimePaths = (_workspaceRoot?: string) => {
+  const paths = envPaths("open-code", { suffix: "" })
 
-export const runtimePaths = {
-  configDir: paths.config,
-  dataDir: paths.data,
-  registryFile: `${paths.config}/servers.enc.json`,
-  auditLogFile: `${paths.data}/audit/actions.jsonl`,
-  auditRepoDir: `${paths.data}/audit/repo`,
+  return {
+    configDir: paths.config,
+    dataDir: paths.data,
+    globalRegistryFile: `${paths.config}/servers.json`,
+    auditLogFile: `${paths.data}/audit/actions.jsonl`,
+    auditRepoDir: `${paths.data}/audit/repo`,
+  }
 }
+
+export const runtimePaths = createRuntimePaths()
+
+export const workspaceRegistryFile = (workspaceRoot: string) =>
+  `${workspaceRoot}/.open-code/servers.json`
 
 export const ensureRuntimeDirs = async () => {
   await mkdir(`${runtimePaths.dataDir}/audit`, { recursive: true })

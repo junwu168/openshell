@@ -1,10 +1,8 @@
-import { link, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { dirname } from "node:path"
 import { promisify } from "node:util"
-import { decryptJson, encryptJson, type EncryptedJsonPayload } from "./crypto"
-import type { SecretProvider } from "./secret-provider"
 
 export type ServerMetadataValue = string | number | boolean | null
 
@@ -15,15 +13,13 @@ export interface PasswordAuthRecord {
 
 export interface PrivateKeyAuthRecord {
   kind: "privateKey"
-  privateKey: string
-  passphrase?: string
+  privateKeyPath: string
 }
 
 export interface CertificateAuthRecord {
   kind: "certificate"
-  certificate: string
-  privateKey: string
-  passphrase?: string
+  certificatePath: string
+  privateKeyPath: string
 }
 
 export type ServerAuthRecord =
@@ -42,34 +38,91 @@ export interface ServerRecord {
   auth: ServerAuthRecord
 }
 
+export type RegistryScope = "global" | "workspace"
+
+export type ResolvedServerRecord = ServerRecord & {
+  scope: RegistryScope
+  shadowingGlobal?: boolean
+  workspaceRoot?: string
+}
+
 export interface ServerRegistry {
-  list(): Promise<ServerRecord[]>
-  resolve(id: string): Promise<ServerRecord | null>
-  upsert(record: ServerRecord): Promise<void>
-  remove(id: string): Promise<boolean>
+  list(): Promise<ResolvedServerRecord[]>
+  resolve(id: string): Promise<ResolvedServerRecord | null>
+  upsert(scope: RegistryScope, record: ServerRecord): Promise<void>
+  remove(scope: RegistryScope, id: string): Promise<boolean>
+  listRaw(scope: RegistryScope): Promise<ServerRecord[]>
+}
+
+type FileLockOptions = {
+  getProcessStartTime?: (pid: number) => Promise<number | null>
+  retryMs?: number
+  timeoutMs?: number
 }
 
 export interface CreateServerRegistryOptions {
-  registryFile: string
-  secretProvider: SecretProvider
-  lockOptions?: {
-    getProcessStartTime?: (pid: number) => Promise<number | null>
-    retryMs?: number
-    timeoutMs?: number
-  }
+  globalRegistryFile: string
+  workspaceRegistryFile: string
+  workspaceRoot: string
+  lockOptions?: FileLockOptions
 }
 
+const parseRecords = (raw: string, file: string) => {
+  const parsed = JSON.parse(raw) as unknown
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Invalid registry file: ${file}`)
+  }
+
+  return parsed as ServerRecord[]
+}
+
+const buildResolvedRecord = (
+  record: ServerRecord,
+  scope: RegistryScope,
+  workspaceRoot: string,
+  shadowingGlobal = false,
+): ResolvedServerRecord => ({
+  ...record,
+  scope,
+  ...(scope === "workspace" ? { workspaceRoot } : {}),
+  ...(shadowingGlobal ? { shadowingGlobal: true } : {}),
+})
+
 export const createServerRegistry = ({
-  registryFile,
-  secretProvider,
+  globalRegistryFile,
+  workspaceRegistryFile,
+  workspaceRoot,
   lockOptions,
 }: CreateServerRegistryOptions): ServerRegistry => {
   const execFileAsync = promisify(execFile)
   const resolveProcessStartTime = lockOptions?.getProcessStartTime
   const lockRetryMs = lockOptions?.retryMs ?? 10
   const lockTimeoutMs = lockOptions?.timeoutMs ?? 5_000
-  let writeQueue = Promise.resolve()
-  const lockFile = `${registryFile}.lock`
+  const fileQueues = new Map<string, Promise<void>>()
+
+  const scopeFile = (scope: RegistryScope) =>
+    scope === "global" ? globalRegistryFile : workspaceRegistryFile
+
+  const getFileQueue = (file: string) => fileQueues.get(file) ?? Promise.resolve()
+
+  const enqueueWrite = <T>(file: string, operation: () => Promise<T>) => {
+    const next = getFileQueue(file).then(operation)
+    fileQueues.set(
+      file,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
+
+    return next
+  }
+
+  const waitForWrites = async (...files: string[]) => {
+    await Promise.all(files.map((file) => getFileQueue(file)))
+  }
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
   const isProcessAlive = (pid: number) => {
     try {
@@ -86,47 +139,6 @@ export const createServerRegistry = ({
       throw error
     }
   }
-
-  const load = async (): Promise<ServerRecord[]> => {
-    try {
-      const raw = await readFile(registryFile, "utf8")
-      const payload = JSON.parse(raw) as EncryptedJsonPayload
-      const key = await secretProvider.getMasterKey()
-      return JSON.parse(decryptJson(payload, key)) as ServerRecord[]
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return []
-      }
-
-      throw error
-    }
-  }
-
-  const save = async (records: ServerRecord[]) => {
-    await mkdir(dirname(registryFile), { recursive: true })
-    const key = await secretProvider.getMasterKey()
-    const payload = encryptJson(JSON.stringify(records), key)
-    const tempFile = `${registryFile}.${process.pid}.${randomUUID()}.tmp`
-
-    try {
-      await writeFile(tempFile, JSON.stringify(payload, null, 2))
-      await rename(tempFile, registryFile)
-    } catch (error) {
-      await rm(tempFile, { force: true })
-      throw error
-    }
-  }
-
-  const enqueueWrite = <T>(operation: () => Promise<T>) => {
-    const next = writeQueue.then(operation)
-    writeQueue = next.then(
-      () => undefined,
-      () => undefined,
-    )
-    return next
-  }
-
-  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
   const getProcessStartTime = async (pid: number) => {
     if (resolveProcessStartTime) {
@@ -155,7 +167,7 @@ export const createServerRegistry = ({
     }
   }
 
-  const tryReclaimAbandonedLock = async () => {
+  const tryReclaimAbandonedLock = async (lockFile: string) => {
     let raw: string
     try {
       raw = await readFile(lockFile, "utf8")
@@ -208,9 +220,10 @@ export const createServerRegistry = ({
     return true
   }
 
-  const withRegistryWriteLock = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const withFileLock = async <T>(file: string, operation: () => Promise<T>): Promise<T> => {
+    const lockFile = `${file}.lock`
     const startedAt = Date.now()
-    await mkdir(dirname(registryFile), { recursive: true })
+    await mkdir(dirname(file), { recursive: true })
 
     while (true) {
       const pendingLockFile = `${lockFile}.${process.pid}.${randomUUID()}.pending`
@@ -238,7 +251,7 @@ export const createServerRegistry = ({
         await rm(pendingLockFile, { force: true })
       }
 
-      if (await tryReclaimAbandonedLock()) {
+      if (await tryReclaimAbandonedLock(lockFile)) {
         continue
       }
 
@@ -250,43 +263,121 @@ export const createServerRegistry = ({
     }
   }
 
-  const waitForOwnWrites = async () => {
-    await writeQueue
+  const loadRaw = async (scope: RegistryScope): Promise<ServerRecord[]> => {
+    const file = scopeFile(scope)
+
+    try {
+      const raw = await readFile(file, "utf8")
+      return parseRecords(raw, file)
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return []
+      }
+
+      throw error
+    }
+  }
+
+  const saveRaw = async (scope: RegistryScope, records: ServerRecord[]) => {
+    const file = scopeFile(scope)
+    await mkdir(dirname(file), { recursive: true })
+    const tempFile = `${file}.${process.pid}.${randomUUID()}.tmp`
+
+    try {
+      await writeFile(tempFile, JSON.stringify(records, null, 2))
+      await rename(tempFile, file)
+    } catch (error) {
+      await rm(tempFile, { force: true })
+      throw error
+    }
+  }
+
+  const mergeRecords = (
+    globalRecords: ServerRecord[],
+    workspaceRecords: ServerRecord[],
+  ): ResolvedServerRecord[] => {
+    const merged = new Map<string, ResolvedServerRecord>()
+    const order: string[] = []
+    const globalIds = new Set<string>()
+
+    for (const record of globalRecords) {
+      globalIds.add(record.id)
+      if (!merged.has(record.id)) {
+        order.push(record.id)
+      }
+      merged.set(record.id, buildResolvedRecord(record, "global", workspaceRoot))
+    }
+
+    for (const record of workspaceRecords) {
+      const shadowingGlobal = globalIds.has(record.id)
+      if (!merged.has(record.id)) {
+        order.push(record.id)
+      }
+      merged.set(record.id, buildResolvedRecord(record, "workspace", workspaceRoot, shadowingGlobal))
+    }
+
+    return order.map((id) => merged.get(id)!).filter(Boolean)
   }
 
   return {
     async list() {
-      await waitForOwnWrites()
-      return load()
+      await waitForWrites(globalRegistryFile, workspaceRegistryFile)
+      const [globalRecords, workspaceRecords] = await Promise.all([
+        loadRaw("global"),
+        loadRaw("workspace"),
+      ])
+      return mergeRecords(globalRecords, workspaceRecords)
     },
     async resolve(id) {
-      await waitForOwnWrites()
-      return (await load()).find((record) => record.id === id) ?? null
+      await waitForWrites(globalRegistryFile, workspaceRegistryFile)
+      const [globalRecords, workspaceRecords] = await Promise.all([
+        loadRaw("global"),
+        loadRaw("workspace"),
+      ])
+      const workspaceRecord = workspaceRecords.find((record) => record.id === id)
+      if (workspaceRecord) {
+        return buildResolvedRecord(
+          workspaceRecord,
+          "workspace",
+          workspaceRoot,
+          globalRecords.some((record) => record.id === id),
+        )
+      }
+
+      const globalRecord = globalRecords.find((record) => record.id === id)
+      return globalRecord ? buildResolvedRecord(globalRecord, "global", workspaceRoot) : null
     },
-    async upsert(record) {
-      await enqueueWrite(async () => {
-        await withRegistryWriteLock(async () => {
-          const records = await load()
+    async upsert(scope, record) {
+      const file = scopeFile(scope)
+      return enqueueWrite(file, async () =>
+        withFileLock(file, async () => {
+          const records = await loadRaw(scope)
           const next = records.filter((item) => item.id !== record.id)
           next.push(record)
-          await save(next)
-        })
-      })
+          await saveRaw(scope, next)
+        }),
+      )
     },
-    async remove(id) {
-      return enqueueWrite(async () =>
-        withRegistryWriteLock(async () => {
-          const records = await load()
+    async remove(scope, id) {
+      const file = scopeFile(scope)
+      return enqueueWrite(file, async () =>
+        withFileLock(file, async () => {
+          const records = await loadRaw(scope)
           const next = records.filter((item) => item.id !== id)
 
           if (next.length === records.length) {
             return false
           }
 
-          await save(next)
+          await saveRaw(scope, next)
           return true
         }),
       )
+    },
+    async listRaw(scope) {
+      const file = scopeFile(scope)
+      await waitForWrites(file)
+      return loadRaw(scope)
     },
   }
 }

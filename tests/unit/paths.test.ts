@@ -4,6 +4,28 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 describe("runtime paths", () => {
+  test("runtime paths expose global and workspace server config locations", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "opencode-paths-"))
+    try {
+      const configDir = join(tempRoot, "config")
+      const dataDir = join(tempRoot, "data")
+
+      mock.module("env-paths", () => ({
+        default: () => ({ config: configDir, data: dataDir }),
+      }))
+
+      const { runtimePaths, workspaceRegistryFile } = await import("../../src/core/paths")
+
+      expect(runtimePaths.globalRegistryFile.endsWith("servers.json")).toBe(true)
+      expect(runtimePaths.auditLogFile).toBe(`${dataDir}/audit/actions.jsonl`)
+      expect(runtimePaths.auditRepoDir).toBe(`${dataDir}/audit/repo`)
+      expect(workspaceRegistryFile("/repo")).toBe("/repo/.open-code/servers.json")
+    } finally {
+      mock.restore()
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
   test("ensureRuntimeDirs prepares the audit repo directory", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "opencode-paths-"))
     try {

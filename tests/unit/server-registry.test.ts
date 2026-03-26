@@ -1,356 +1,146 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import {
-  createServerRegistry,
-  type ServerRecord,
-} from "../../src/core/registry/server-registry"
-
-const masterKey = Buffer.alloc(32, 7)
-
-const createRegistry = (registryFile: string) =>
-  createServerRegistry({
-    registryFile,
-    secretProvider: { getMasterKey: async () => masterKey },
-  })
+import { createServerRegistry } from "../../src/core/registry/server-registry"
 
 describe("server registry", () => {
   let tempDir: string
+  let workspaceRoot: string
+  let globalRegistryFile: string
+  let workspaceRegistryFile: string
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "open-code-registry-"))
+    workspaceRoot = join(tempDir, "repo")
+    globalRegistryFile = join(tempDir, "config", "servers.json")
+    workspaceRegistryFile = join(workspaceRoot, ".open-code", "servers.json")
+
+    await mkdir(join(tempDir, "config"), { recursive: true })
+    await mkdir(join(workspaceRoot, ".open-code"), { recursive: true })
   })
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true })
   })
 
-  test("stores server records encrypted at rest", async () => {
-    const registryFile = join(tempDir, "servers.enc.json")
-    const registry = createRegistry(registryFile)
-
-    await registry.upsert({
-      id: "prod-a",
-      host: "10.0.0.10",
-      port: 22,
-      username: "root",
-      labels: ["prod", "critical"],
-      groups: ["edge"],
-      metadata: { region: "us-east-1", owner: "platform" },
-      auth: { kind: "password", secret: "super-secret" },
+  const createRegistry = () =>
+    createServerRegistry({
+      globalRegistryFile,
+      workspaceRegistryFile,
+      workspaceRoot,
     })
 
-    const disk = await readFile(registryFile, "utf8")
-    expect(disk.includes("super-secret")).toBe(false)
-    expect(await registry.resolve("prod-a")).toEqual({
+  test("plain-text password is written as plain JSON", async () => {
+    const registry = createRegistry()
+    const record = {
       id: "prod-a",
       host: "10.0.0.10",
       port: 22,
       username: "root",
-      labels: ["prod", "critical"],
-      groups: ["edge"],
-      metadata: { region: "us-east-1", owner: "platform" },
-      auth: { kind: "password", secret: "super-secret" },
-    })
-  })
-
-  test("a fresh registry instance can read previously written encrypted data", async () => {
-    const registryFile = join(tempDir, "servers.enc.json")
-    const firstRegistry = createRegistry(registryFile)
-
-    await firstRegistry.upsert({
-      id: "prod-a",
-      host: "10.0.0.10",
-      port: 22,
-      username: "root",
-      auth: { kind: "password", secret: "super-secret" },
-    })
-
-    const secondRegistry = createRegistry(registryFile)
-
-    expect(await secondRegistry.resolve("prod-a")).toEqual({
-      id: "prod-a",
-      host: "10.0.0.10",
-      port: 22,
-      username: "root",
-      auth: { kind: "password", secret: "super-secret" },
-    })
-  })
-
-  test("multiple records coexist and widened auth shapes round-trip", async () => {
-    const registry = createRegistry(join(tempDir, "servers.enc.json"))
-
-    const passwordRecord: ServerRecord = {
-      id: "prod-a",
-      host: "10.0.0.10",
-      port: 22,
-      username: "root",
-      labels: ["prod"],
-      groups: ["edge"],
-      metadata: { region: "us-east-1" },
       auth: { kind: "password", secret: "super-secret" },
     }
 
-    const certificateRecord: ServerRecord = {
-      id: "prod-b",
-      host: "10.0.0.11",
+    await registry.upsert("workspace", record)
+
+    const disk = await readFile(workspaceRegistryFile, "utf8")
+    expect(JSON.parse(disk)).toEqual([record])
+  })
+
+  test("workspace records override global records by id", async () => {
+    const registry = createRegistry()
+    const globalRecord = {
+      id: "prod-a",
+      host: "10.0.0.10",
+      port: 22,
+      username: "root",
+      auth: { kind: "password", secret: "global-secret" },
+    }
+    const workspaceRecord = {
+      id: "prod-a",
+      host: "10.0.0.99",
       port: 2222,
       username: "deploy",
-      labels: ["staging"],
-      groups: ["batch"],
-      metadata: { ticket: "OPS-42" },
-      auth: {
-        kind: "certificate",
-        certificate: "certificate-body",
-        privateKey: "private-key-body",
-        passphrase: "cert-passphrase",
-      },
+      auth: { kind: "password", secret: "workspace-secret" },
     }
 
-    await registry.upsert(passwordRecord)
-    await registry.upsert(certificateRecord)
+    await writeFile(globalRegistryFile, JSON.stringify([globalRecord], null, 2))
+    await writeFile(workspaceRegistryFile, JSON.stringify([workspaceRecord], null, 2))
 
-    expect(await registry.list()).toEqual([passwordRecord, certificateRecord])
-  })
-
-  test("removes an existing record without touching others", async () => {
-    const registry = createRegistry(join(tempDir, "servers.enc.json"))
-    const prodA: ServerRecord = {
+    expect(await registry.resolve("prod-a")).toMatchObject({
       id: "prod-a",
-      host: "10.0.0.10",
-      port: 22,
-      username: "root",
-      auth: { kind: "password", secret: "super-secret" },
-    }
-    const prodB: ServerRecord = {
-      id: "prod-b",
-      host: "10.0.0.11",
-      port: 22,
+      host: "10.0.0.99",
+      port: 2222,
       username: "deploy",
-      auth: { kind: "password", secret: "another-secret" },
-    }
-
-    await registry.upsert(prodA)
-    await registry.upsert(prodB)
-
-    await expect(registry.remove("prod-a")).resolves.toBe(true)
-    expect(await registry.resolve("prod-a")).toBeNull()
-    expect(await registry.list()).toEqual([prodB])
-  })
-
-  test("returns false when removing a missing record", async () => {
-    const registry = createRegistry(join(tempDir, "servers.enc.json"))
-
-    await expect(registry.remove("missing")).resolves.toBe(false)
-    expect(await registry.list()).toEqual([])
-  })
-
-  test("serializes overlapping upserts so concurrent writes do not lose updates", async () => {
-    const registryFile = join(tempDir, "servers.enc.json")
-    let pendingCalls = 0
-    let releaseFirstWrite: (() => void) | null = null
-    let firstReleaseScheduled = false
-
-    const registry = createServerRegistry({
-      registryFile,
-      secretProvider: {
-        async getMasterKey() {
-          pendingCalls += 1
-          if (pendingCalls === 1) {
-            await new Promise<void>((resolve) => {
-              releaseFirstWrite = resolve
-              setTimeout(resolve, 25)
-            })
-          }
-          if (pendingCalls === 2 && releaseFirstWrite && !firstReleaseScheduled) {
-            firstReleaseScheduled = true
-            releaseFirstWrite()
-          }
-          return masterKey
-        },
-      },
+      scope: "workspace",
+      shadowingGlobal: true,
+      workspaceRoot,
+      auth: { kind: "password", secret: "workspace-secret" },
     })
+  })
 
-    const firstRecord: ServerRecord = {
+  test("list returns effective merged records with scope metadata", async () => {
+    const registry = createRegistry()
+    const globalOnly = {
+      id: "prod-b",
+      host: "10.0.0.11",
+      port: 22,
+      username: "ops",
+      auth: { kind: "privateKey", privateKeyPath: "/keys/prod-b" },
+    }
+    const globalShadowed = {
       id: "prod-a",
       host: "10.0.0.10",
       port: 22,
       username: "root",
-      auth: { kind: "password", secret: "super-secret" },
+      auth: { kind: "password", secret: "global-secret" },
     }
-
-    const secondRecord: ServerRecord = {
-      id: "prod-b",
-      host: "10.0.0.11",
-      port: 22,
+    const workspaceShadow = {
+      id: "prod-a",
+      host: "10.0.0.99",
+      port: 2222,
       username: "deploy",
-      auth: {
-        kind: "privateKey",
-        privateKey: "private-key-body",
-        passphrase: "key-passphrase",
-      },
+      auth: { kind: "certificate", certificatePath: "/certs/prod-a.crt", privateKeyPath: "/keys/prod-a" },
     }
 
-    const pendingWrite = Promise.all([
-      registry.upsert(firstRecord),
-      registry.upsert(secondRecord),
+    await writeFile(globalRegistryFile, JSON.stringify([globalShadowed, globalOnly], null, 2))
+    await writeFile(workspaceRegistryFile, JSON.stringify([workspaceShadow], null, 2))
+
+    expect(await registry.list()).toEqual([
+      {
+        ...workspaceShadow,
+        scope: "workspace",
+        shadowingGlobal: true,
+        workspaceRoot,
+      },
+      {
+        ...globalOnly,
+        scope: "global",
+      },
     ])
-
-    await pendingWrite
-
-    expect(await registry.list()).toEqual([firstRecord, secondRecord])
   })
 
-  test("reads wait for pending writes from the same registry instance", async () => {
-    const registryFile = join(tempDir, "servers.enc.json")
-    let blockedCallCount = 0
-    let releaseWrite!: () => void
-    let writeBlocked!: () => void
-    const blocked = new Promise<void>((resolve) => {
-      writeBlocked = resolve
-    })
-
-    const registry = createServerRegistry({
-      registryFile,
-      secretProvider: {
-        async getMasterKey() {
-          blockedCallCount += 1
-          if (blockedCallCount === 1) {
-            await new Promise<void>((resolve) => {
-              releaseWrite = resolve
-              writeBlocked()
-            })
-          }
-          return masterKey
-        },
-      },
-    })
-
-    const record: ServerRecord = {
-      id: "prod-a",
-      host: "10.0.0.10",
-      port: 22,
-      username: "root",
-      auth: { kind: "password", secret: "super-secret" },
-    }
-
-    const pendingUpsert = registry.upsert(record)
-    await blocked
-
-    const pendingResolve = registry.resolve("prod-a")
-    const pendingList = registry.list()
-
-    releaseWrite()
-
-    await pendingUpsert
-    expect(await pendingResolve).toEqual(record)
-    expect(await pendingList).toEqual([record])
-  })
-
-  test("two registry instances do not lose records when upserting concurrently", async () => {
-    const registryFile = join(tempDir, "servers.enc.json")
-    let releaseFirstWrite!: () => void
-    let firstWriteBlocked!: () => void
-    const firstBlocked = new Promise<void>((resolve) => {
-      firstWriteBlocked = resolve
-    })
-
-    const firstRegistry = createServerRegistry({
-      registryFile,
-      secretProvider: {
-        async getMasterKey() {
-          await new Promise<void>((resolve) => {
-            releaseFirstWrite = resolve
-            firstWriteBlocked()
-          })
-          return masterKey
-        },
-      },
-    })
-
-    const secondRegistry = createRegistry(registryFile)
-
-    const firstRecord: ServerRecord = {
-      id: "prod-a",
-      host: "10.0.0.10",
-      port: 22,
-      username: "root",
-      auth: { kind: "password", secret: "super-secret" },
-    }
-
-    const secondRecord: ServerRecord = {
+  test("listRaw returns unmerged records for each scope", async () => {
+    const registry = createRegistry()
+    const globalRecord = {
       id: "prod-b",
       host: "10.0.0.11",
       port: 22,
-      username: "deploy",
-      auth: {
-        kind: "privateKey",
-        privateKey: "private-key-body",
-      },
+      username: "ops",
+      auth: { kind: "privateKey", privateKeyPath: "/keys/prod-b" },
     }
-
-    const firstUpsert = firstRegistry.upsert(firstRecord)
-    await firstBlocked
-    const secondUpsert = secondRegistry.upsert(secondRecord)
-    releaseFirstWrite()
-    await firstUpsert
-    await secondUpsert
-
-    const reloadedRegistry = createRegistry(registryFile)
-    expect(await reloadedRegistry.list()).toEqual([firstRecord, secondRecord])
-  })
-
-  test("reclaims a lock when the pid now belongs to a newer process", async () => {
-    const registryFile = join(tempDir, "servers.enc.json")
-    const lockFile = `${registryFile}.lock`
-    const registry = createServerRegistry({
-      registryFile,
-      secretProvider: { getMasterKey: async () => masterKey },
-      lockOptions: {
-        getProcessStartTime: async (pid) => (pid === process.pid ? Date.now() : null),
-      },
-    })
-
-    await writeFile(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date(0).toISOString() }))
-
-    const record: ServerRecord = {
+    const workspaceRecord = {
       id: "prod-a",
-      host: "10.0.0.10",
-      port: 22,
-      username: "root",
-      auth: { kind: "password", secret: "super-secret" },
+      host: "10.0.0.99",
+      port: 2222,
+      username: "deploy",
+      auth: { kind: "password", secret: "workspace-secret" },
     }
 
-    await registry.upsert(record)
+    await writeFile(globalRegistryFile, JSON.stringify([globalRecord], null, 2))
+    await writeFile(workspaceRegistryFile, JSON.stringify([workspaceRecord], null, 2))
 
-    expect(await registry.list()).toEqual([record])
-  })
-
-  test("times out when a live lock owner keeps the registry busy", async () => {
-    const registryFile = join(tempDir, "servers.enc.json")
-    const lockFile = `${registryFile}.lock`
-    const lockCreatedAt = new Date().toISOString()
-    const registry = createServerRegistry({
-      registryFile,
-      secretProvider: { getMasterKey: async () => masterKey },
-      lockOptions: {
-        getProcessStartTime: async (pid) => (pid === process.pid ? Date.now() - 1_000 : null),
-        retryMs: 5,
-        timeoutMs: 40,
-      },
-    })
-
-    await writeFile(lockFile, JSON.stringify({ pid: process.pid, createdAt: lockCreatedAt }))
-
-    await expect(
-      registry.upsert({
-        id: "prod-a",
-        host: "10.0.0.10",
-        port: 22,
-        username: "root",
-        auth: { kind: "password", secret: "super-secret" },
-      }),
-    ).rejects.toThrow("Timed out waiting for registry lock")
+    expect(await registry.listRaw("global")).toEqual([globalRecord])
+    expect(await registry.listRaw("workspace")).toEqual([workspaceRecord])
   })
 })

@@ -1,8 +1,10 @@
 {
-  "name": "open-code",
+  "name": "@junwu168/openshell",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
+  "bin": {
+    "openshell": "./dist/cli/openshell.js"
+  },
   "exports": {
     ".": {
       "bun": "./src/index.ts",
@@ -13,7 +15,6 @@
     "@opencode-ai/plugin": "*",
     "diff": "*",
     "env-paths": "*",
-    "keytar": "*",
     "shescape": "*",
     "ssh2": "*"
   },
@@ -24,6 +25,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "openshell": "$npm_execpath scripts/openshell.ts",
+    "server-registry": "$npm_execpath scripts/server-registry.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   }

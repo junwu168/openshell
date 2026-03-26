@@ -1,9 +1,11 @@
+import { readFileSync } from "node:fs"
+import { isAbsolute, resolve } from "node:path"
 import type { ConnectConfig } from "ssh2"
 import type { PolicyDecision, ToolPayload, ToolResult } from "./contracts"
 import { applyUnifiedPatch } from "./patch"
 import { classifyRemoteExec } from "./policy"
 import { errorResult, okResult, partialFailureResult } from "./result"
-import type { ServerRecord, ServerRegistry } from "./registry/server-registry"
+import type { ResolvedServerRecord, ServerRecord, ServerRegistry } from "./registry/server-registry"
 
 type ExecResult = {
   stdout: string
@@ -96,7 +98,67 @@ type RemoteFindInput = {
 
 const quoteShell = (value: string) => `'${value.replaceAll("'", `'\"'\"'`)}'`
 
-const toConnectConfig = (server: ServerRecord): ConnectConfig => {
+type AuthPathErrorCode = "AUTH_PATH_INVALID" | "KEY_PATH_NOT_FOUND" | "CERTIFICATE_PATH_NOT_FOUND" | "AUTH_PATH_UNREADABLE"
+
+const authError = <T>(
+  tool: string,
+  server: ResolvedServerRecord,
+  code: AuthPathErrorCode,
+  message: string,
+): ToolResult<T> =>
+  errorResult({
+    tool,
+    server: server.id,
+    code,
+    message,
+    execution: { attempted: false, completed: false },
+    audit: { logWritten: false, snapshotStatus: "not-applicable" },
+  })
+
+const resolveAuthPath = (
+  server: ResolvedServerRecord,
+  pathValue: string,
+): { path: string } | { code: AuthPathErrorCode; message: string } => {
+  if (isAbsolute(pathValue)) {
+    return { path: pathValue }
+  }
+
+  if (server.scope !== "workspace" || !server.workspaceRoot) {
+    return {
+      code: "AUTH_PATH_INVALID",
+      message: `Relative auth paths are only allowed for workspace-scoped records: ${pathValue}`,
+    }
+  }
+
+  return {
+    path: resolve(server.workspaceRoot, pathValue),
+  }
+}
+
+const readAuthFile = (
+  server: ResolvedServerRecord,
+  tool: string,
+  pathValue: string,
+  missingCode: "KEY_PATH_NOT_FOUND" | "CERTIFICATE_PATH_NOT_FOUND",
+): { content: string } | ToolResult<never> => {
+  const resolved = resolveAuthPath(server, pathValue)
+  if ("code" in resolved) {
+    return authError(tool, server, resolved.code, resolved.message)
+  }
+
+  try {
+    return { content: readFileSync(resolved.path, "utf8") }
+  } catch (error) {
+    const errno = (error as NodeJS.ErrnoException).code
+    if (errno === "ENOENT") {
+      return authError(tool, server, missingCode, `Auth file not found: ${resolved.path}`)
+    }
+
+    return authError(tool, server, "AUTH_PATH_UNREADABLE", `Auth file is unreadable: ${resolved.path}`)
+  }
+}
+
+const toConnectConfig = (tool: string, server: ResolvedServerRecord): ConnectConfig | ToolResult<never> => {
   const base = {
     host: server.host,
     port: server.port,
@@ -109,18 +171,35 @@ const toConnectConfig = (server: ServerRecord): ConnectConfig => {
         ...base,
         password: server.auth.secret,
       }
-    case "privateKey":
+    case "privateKey": {
+      const privateKey = readAuthFile(server, tool, server.auth.privateKeyPath, "KEY_PATH_NOT_FOUND")
+      if ("status" in privateKey) {
+        return privateKey
+      }
+
       return {
         ...base,
-        privateKey: server.auth.privateKey,
-        passphrase: server.auth.passphrase,
+        privateKey: privateKey.content,
+        ...(server.auth.passphrase ? { passphrase: server.auth.passphrase } : {}),
       }
-    case "certificate":
+    }
+    case "certificate": {
+      const certificate = readAuthFile(server, tool, server.auth.certificatePath, "CERTIFICATE_PATH_NOT_FOUND")
+      if ("status" in certificate) {
+        return certificate
+      }
+
+      const privateKey = readAuthFile(server, tool, server.auth.privateKeyPath, "KEY_PATH_NOT_FOUND")
+      if ("status" in privateKey) {
+        return privateKey
+      }
+
       return {
         ...base,
-        privateKey: server.auth.privateKey,
-        passphrase: server.auth.passphrase,
+        privateKey: privateKey.content,
+        ...(server.auth.passphrase ? { passphrase: server.auth.passphrase } : {}),
       }
+    }
   }
 }
 
@@ -161,6 +240,14 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     }
   }
 
+  const isRegistryValidationError = (
+    error: unknown,
+  ): error is { code: "REGISTRY_RECORD_INVALID"; message: string } =>
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "REGISTRY_RECORD_INVALID" &&
+    typeof (error as { message?: unknown }).message === "string"
+
   const preflightLog = async <T>(tool: string, server?: string): Promise<ToolResult<T> | null> => {
     try {
       await audit.preflightLog()
@@ -177,16 +264,59 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     }
   }
 
+  const logAuthFailure = async <T>(
+    tool: string,
+    approvalStatus: string,
+    logEntry: Record<string, unknown>,
+    result: ToolResult<T>,
+  ): Promise<ToolResult<T>> => {
+    const logWritten = await appendLogSafe({
+      ...logEntry,
+      tool,
+      server: result.server,
+      approvalStatus,
+      code: result.code,
+      message: result.message,
+    })
+
+    return withAuditFlag("error", result, logWritten)
+  }
+
   const resolveServer = async <T>(
     tool: string,
     serverId: string,
     logEntry: Record<string, unknown>,
     approvalStatus: string,
-  ): Promise<{ result: ToolResult<T> | null; server: ServerRecord | null }> => {
-    let server: ServerRecord | null
+  ): Promise<{ result: ToolResult<T> | null; server: ResolvedServerRecord | null }> => {
+    let server: ResolvedServerRecord | null
     try {
       server = await registry.resolve(serverId)
     } catch (error) {
+      if (isRegistryValidationError(error)) {
+        const payload: ToolPayload<T> = {
+          tool,
+          server: serverId,
+          code: error.code,
+          message: error.message,
+          execution: { attempted: false, completed: false },
+          audit: { logWritten: false, snapshotStatus: "not-applicable" },
+        }
+
+        const logWritten = await appendLogSafe({
+          ...logEntry,
+          tool,
+          server: serverId,
+          approvalStatus,
+          code: error.code,
+          message: error.message,
+        })
+
+        return {
+          result: withAuditFlag("error", payload, logWritten),
+          server: null,
+        }
+      }
+
       const payload: ToolPayload<T> = {
         tool,
         server: serverId,
@@ -248,7 +378,7 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
 
     try {
       const servers = await registry.list()
-      const data = servers.map(({ auth: _auth, ...server }) => server)
+      const data = servers.map(({ auth: _auth, workspaceRoot: _workspaceRoot, ...server }) => server)
       const payload: ToolPayload<Array<Omit<ServerRecord, "auth">>> = {
         tool: "list_servers",
         data,
@@ -262,6 +392,23 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
       })
       return withAuditFlag("ok", payload, logWritten)
     } catch (error) {
+      if (isRegistryValidationError(error)) {
+        const payload: ToolPayload<Array<Omit<ServerRecord, "auth">>> = {
+          tool: "list_servers",
+          code: error.code,
+          message: error.message,
+          execution: { attempted: false, completed: false },
+          audit: { logWritten: false, snapshotStatus: "not-applicable" },
+        }
+        const logWritten = await appendLogSafe({
+          tool: "list_servers",
+          approvalStatus: "not-required",
+          code: error.code,
+          message: payload.message,
+        })
+        return withAuditFlag("error", payload, logWritten)
+      }
+
       const payload: ToolPayload<Array<Omit<ServerRecord, "auth">>> = {
         tool: "list_servers",
         code: "REGISTRY_LIST_FAILED",
@@ -322,7 +469,17 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     }
 
     try {
-      const executed = await ssh.exec(toConnectConfig(resolved.server!), input.command, {
+      const connection = toConnectConfig("remote_exec", resolved.server!)
+      if ("status" in connection) {
+        return logAuthFailure(
+          "remote_exec",
+          approvalStatus,
+          { command: input.command, cwd: input.cwd, timeout: input.timeout },
+          connection,
+        )
+      }
+
+      const executed = await ssh.exec(connection, input.command, {
         cwd: input.cwd,
         timeout: input.timeout,
       })
@@ -391,7 +548,17 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     }
 
     try {
-      const body = await ssh.readFile(toConnectConfig(resolved.server!), input.path)
+      const connection = toConnectConfig("remote_read_file", resolved.server!)
+      if ("status" in connection) {
+        return logAuthFailure(
+          "remote_read_file",
+          "not-required",
+          { path: input.path, offset: input.offset, length: input.length },
+          connection,
+        )
+      }
+
+      const body = await ssh.readFile(connection, input.path)
       const offset = input.offset ?? 0
       const content = body.slice(offset, input.length ? offset + input.length : undefined)
       const payload: ToolPayload<{ content: string }> = {
@@ -447,6 +614,11 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
       return resolved.result
     }
 
+    const connection = toConnectConfig("remote_write_file", resolved.server!)
+    if ("status" in connection) {
+      return logAuthFailure("remote_write_file", "host-managed-required", { path: input.path, mode: input.mode }, connection)
+    }
+
     try {
       await (audit.preflightSnapshots?.() ?? Promise.resolve())
     } catch (error) {
@@ -470,7 +642,6 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
       return withAuditFlag("error", payload, logWritten)
     }
 
-    const connection = toConnectConfig(resolved.server!)
     const before = await ssh.readFile(connection, input.path).catch(() => "")
     try {
       await ssh.writeFile(connection, input.path, input.content, input.mode)
@@ -558,9 +729,14 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
       return resolved.result
     }
 
+    const connection = toConnectConfig("remote_patch_file", resolved.server!)
+    if ("status" in connection) {
+      return logAuthFailure("remote_patch_file", "host-managed-required", { path: input.path }, connection)
+    }
+
     let before: string
     try {
-      before = await ssh.readFile(toConnectConfig(resolved.server!), input.path)
+      before = await ssh.readFile(connection, input.path)
     } catch (error) {
       const payload: ToolPayload<{ size: number; mode: number; isFile: boolean; isDirectory: boolean }> = {
         tool: "remote_patch_file",
@@ -627,7 +803,7 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     }
 
     try {
-      await ssh.writeFile(toConnectConfig(resolved.server!), input.path, after)
+      await ssh.writeFile(connection, input.path, after)
     } catch (error) {
       const payload: ToolPayload<ExecResult> = {
         tool: "remote_patch_file",
@@ -712,12 +888,17 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     }
 
     try {
-      const entries = await ssh.listDir(
-        toConnectConfig(resolved.server!),
-        input.path,
-        input.recursive ?? false,
-        input.limit ?? 200,
-      )
+      const connection = toConnectConfig("remote_list_dir", resolved.server!)
+      if ("status" in connection) {
+        return logAuthFailure(
+          "remote_list_dir",
+          "not-required",
+          { path: input.path, recursive: input.recursive ?? false, limit: input.limit ?? 200 },
+          connection,
+        )
+      }
+
+      const entries = await ssh.listDir(connection, input.path, input.recursive ?? false, input.limit ?? 200)
       const payload: ToolPayload<{ name: string; longname: string }[] | string[]> = {
         tool: "remote_list_dir",
         server: input.server,
@@ -772,7 +953,12 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     }
 
     try {
-      const stat = await ssh.stat(toConnectConfig(resolved.server!), input.path)
+      const connection = toConnectConfig("remote_stat", resolved.server!)
+      if ("status" in connection) {
+        return logAuthFailure("remote_stat", "not-required", { path: input.path }, connection)
+      }
+
+      const stat = await ssh.stat(connection, input.path)
       const payload: ToolPayload<typeof stat> = {
         tool: "remote_stat",
         server: input.server,
@@ -830,7 +1016,17 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
       : `grep -R -n ${quoteShell(input.pattern)} ${quoteShell(input.path)} | head -n ${limit}`
 
     try {
-      const executed = await ssh.exec(toConnectConfig(resolved.server!), command)
+      const connection = toConnectConfig("remote_find", resolved.server!)
+      if ("status" in connection) {
+        return logAuthFailure(
+          "remote_find",
+          "not-required",
+          { path: input.path, pattern: input.pattern, glob: input.glob, limit: input.limit },
+          connection,
+        )
+      }
+
+      const executed = await ssh.exec(connection, command)
       const payload: ToolPayload<ExecResult> = {
         tool: "remote_find",
         server: input.server,

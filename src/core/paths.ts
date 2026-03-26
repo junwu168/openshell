@@ -1,15 +1,29 @@
 import envPaths from "env-paths"
 import { mkdir } from "node:fs/promises"
+import { cwd } from "node:process"
 
-const paths = envPaths("open-code", { suffix: "" })
+export const createRuntimePaths = (workspaceRoot: string) => {
+  const openshellPaths = envPaths("openshell", { suffix: "" })
+  const opencodePaths = envPaths("opencode", { suffix: "" })
 
-export const runtimePaths = {
-  configDir: paths.config,
-  dataDir: paths.data,
-  registryFile: `${paths.config}/servers.enc.json`,
-  auditLogFile: `${paths.data}/audit/actions.jsonl`,
-  auditRepoDir: `${paths.data}/audit/repo`,
+  return {
+    configDir: openshellPaths.config,
+    dataDir: openshellPaths.data,
+    globalRegistryFile: `${openshellPaths.config}/servers.json`,
+    workspaceTrackerFile: `${openshellPaths.data}/workspaces.json`,
+    opencodeConfigDir: opencodePaths.config,
+    opencodeConfigFile: `${opencodePaths.config}/opencode.json`,
+    workspaceRegistryDir: `${workspaceRoot}/.open-code`,
+    workspaceRegistryFile: `${workspaceRoot}/.open-code/servers.json`,
+    auditLogFile: `${openshellPaths.data}/audit/actions.jsonl`,
+    auditRepoDir: `${openshellPaths.data}/audit/repo`,
+  }
 }
+
+export const runtimePaths = createRuntimePaths(cwd())
+
+export const workspaceRegistryFile = (workspaceRoot: string) =>
+  `${workspaceRoot}/.open-code/servers.json`
 
 export const ensureRuntimeDirs = async () => {
   await mkdir(`${runtimePaths.dataDir}/audit`, { recursive: true })

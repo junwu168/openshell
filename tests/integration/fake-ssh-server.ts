@@ -44,6 +44,28 @@ const waitForSshReady = async (connection: ConnectConfig, timeoutMs = 15_000) =>
 
 export const startFakeSshServer = async () => {
   const container = await new GenericContainer(SSH_IMAGE)
+    .withCopyContentToContainer([
+      {
+        content: [
+          "#!/usr/bin/env sh",
+          "set -eu",
+          "",
+          "mkdir -p /tmp/open-code",
+          "chmod 1777 /tmp/open-code",
+          "cat <<'EOF' >/tmp/open-code/hosts",
+          "127.0.0.1 localhost",
+          "EOF",
+          "cat <<'EOF' >/tmp/open-code/app.conf",
+          "port=80",
+          "EOF",
+          "chown open:open /tmp/open-code/hosts /tmp/open-code/app.conf",
+          "chmod 0644 /tmp/open-code/hosts /tmp/open-code/app.conf",
+          "",
+        ].join("\n"),
+        target: "/custom-cont-init.d/10-seed-open-code.sh",
+        mode: 0o755,
+      },
+    ])
     .withEnvironment({
       USER_NAME: "open",
       USER_PASSWORD: "openpass",
@@ -62,10 +84,6 @@ export const startFakeSshServer = async () => {
   }
 
   try {
-    await container.copyContentToContainer([
-      { content: "127.0.0.1 localhost\n", target: "/tmp/open-code/hosts", mode: 0o666 },
-      { content: "port=80\n", target: "/tmp/open-code/app.conf", mode: 0o666 },
-    ])
     await waitForSshReady(connection)
   } catch (error) {
     await container.stop().catch(() => undefined)

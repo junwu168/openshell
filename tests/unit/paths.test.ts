@@ -4,6 +4,43 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 describe("runtime paths", () => {
+  test("runtime paths use openshell app directories and expose OpenCode config", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "opencode-paths-"))
+    try {
+      const openshellConfigDir = join(tempRoot, "openshell-config")
+      const openshellDataDir = join(tempRoot, "openshell-data")
+      const opencodeConfigDir = join(tempRoot, "opencode-config")
+
+      mock.module("env-paths", () => ({
+        default: (name: string) => {
+          if (name === "openshell") {
+            return { config: openshellConfigDir, data: openshellDataDir }
+          }
+
+          if (name === "opencode") {
+            return { config: opencodeConfigDir, data: join(tempRoot, "opencode-data") }
+          }
+
+          throw new Error(`unexpected env-paths name: ${name}`)
+        },
+      }))
+
+      const { createRuntimePaths, runtimePaths } = await import("../../src/core/paths?runtime-paths-test-1")
+      const runtime = createRuntimePaths("/repo")
+
+      expect(runtime.configDir).toBe(openshellConfigDir)
+      expect(runtime.dataDir).toBe(openshellDataDir)
+      expect(runtime.globalRegistryFile.endsWith("servers.json")).toBe(true)
+      expect(runtime.workspaceRegistryFile).toBe("/repo/.open-code/servers.json")
+      expect(runtime.opencodeConfigDir).toBe(opencodeConfigDir)
+      expect(runtime.opencodeConfigFile).toBe(join(opencodeConfigDir, "opencode.json"))
+      expect(runtimePaths.globalRegistryFile.endsWith("servers.json")).toBe(true)
+    } finally {
+      mock.restore()
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
   test("ensureRuntimeDirs prepares the audit repo directory", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "opencode-paths-"))
     try {
@@ -14,7 +51,7 @@ describe("runtime paths", () => {
         default: () => ({ config: configDir, data: dataDir }),
       }))
 
-      const { ensureRuntimeDirs, runtimePaths } = await import("../../src/core/paths")
+      const { ensureRuntimeDirs, runtimePaths } = await import("../../src/core/paths?runtime-paths-test-2")
       await ensureRuntimeDirs()
 
       const pathStat = await stat(runtimePaths.auditRepoDir)

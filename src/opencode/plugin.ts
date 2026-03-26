@@ -3,8 +3,7 @@ import { createAuditLogStore } from "../core/audit/log-store"
 import { createGitAuditRepo } from "../core/audit/git-audit-repo"
 import { createOrchestrator } from "../core/orchestrator"
 import { classifyRemoteExec } from "../core/policy"
-import { ensureRuntimeDirs, runtimePaths } from "../core/paths"
-import { createKeychainSecretProvider } from "../core/registry/keychain-provider"
+import { createRuntimePaths, ensureRuntimeDirs } from "../core/paths"
 import { createServerRegistry } from "../core/registry/server-registry"
 import { errorResult } from "../core/result"
 import { createSshRuntime } from "../core/ssh/ssh-runtime"
@@ -13,7 +12,7 @@ const serialize = async <T>(result: Promise<T>) => JSON.stringify(await result)
 type RuntimeDependencies = Parameters<typeof createOrchestrator>[0]
 type OpenCodePluginOptions = {
   ensureRuntimeDirs?: () => Promise<void>
-  createRuntimeDependencies?: () => RuntimeDependencies
+  createRuntimeDependencies?: (workspaceRoot?: string) => RuntimeDependencies
 }
 
 type ApprovalRequest = Parameters<ToolContext["ask"]>[0]
@@ -206,13 +205,15 @@ const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
   }),
 })
 
-const buildRuntimeDependencies = (): RuntimeDependencies => {
+const buildRuntimeDependencies = (workspaceRoot: string): RuntimeDependencies => {
+  const paths = createRuntimePaths(workspaceRoot)
   const registry = createServerRegistry({
-    registryFile: runtimePaths.registryFile,
-    secretProvider: createKeychainSecretProvider(),
+    globalRegistryFile: paths.globalRegistryFile,
+    workspaceRegistryFile: paths.workspaceRegistryFile,
+    workspaceRoot,
   })
-  const auditLog = createAuditLogStore(runtimePaths.auditLogFile)
-  const auditRepo = createGitAuditRepo(runtimePaths.auditRepoDir)
+  const auditLog = createAuditLogStore(paths.auditLogFile)
+  const auditRepo = createGitAuditRepo(paths.auditRepoDir)
 
   return {
     registry,
@@ -226,10 +227,12 @@ const buildRuntimeDependencies = (): RuntimeDependencies => {
   }
 }
 
-export const createOpenCodePlugin = (options: OpenCodePluginOptions = {}): Plugin => async () => {
+export const createOpenCodePlugin = (options: OpenCodePluginOptions = {}): Plugin => async (input) => {
   await (options.ensureRuntimeDirs ?? ensureRuntimeDirs)()
 
-  const orchestrator = createOrchestrator((options.createRuntimeDependencies ?? buildRuntimeDependencies)())
+  const orchestrator = createOrchestrator(
+    (options.createRuntimeDependencies ?? buildRuntimeDependencies)(input.worktree),
+  )
 
   return {
     tool: createTools(orchestrator),

@@ -13,7 +13,6 @@
     "@opencode-ai/plugin": "*",
     "diff": "*",
     "env-paths": "*",
-    "keytar": "*",
     "shescape": "*",
     "ssh2": "*"
   },

@@ -265,6 +265,10 @@ with at least one real SSH target, including the disposable Docker SSH path alre
 
 These are acceptable tradeoffs for the requested simplicity, but they must be documented directly.
 
+## Implementation Note
+
+Task 4 removed `keytar` from package metadata and synchronized the README with the config-backed registry model. The runtime design above remains unchanged.
+
 ## Recommendation
 
 Implement this as a clean replacement of the current encrypted/keychain-backed registry path. Do not keep both systems active in parallel. The simpler model is easier to understand, easier to operate, and more likely to behave consistently across macOS, Linux, and Windows.

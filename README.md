@@ -14,7 +14,53 @@ Use the interactive registry helper to manage real test targets for the OpenCode
 2. `bun run server-registry list`
 3. `bun run server-registry remove`
 
-The helper stores server records in the existing encrypted local registry and uses the Keychain-backed master key flow already used by the plugin runtime.
+The helper now reads layered JSON config files instead of an encrypted registry or OS keychain.
+
+- Workspace config: `<workspace>/.open-code/servers.json`
+- Global config: the user config directory resolved by `env-paths` for `open-code` (for example `~/Library/Preferences/open-code/servers.json` on macOS, `~/.config/open-code/servers.json` on Linux, and `%AppData%/open-code/servers.json` on Windows)
+
+Workspace entries override global entries with the same `id`.
+
+Password auth is stored in plain text inside config. That is unsafe, but supported for convenience in trusted local setups.
+Key and certificate auth store file paths only, not PEM contents or private key material.
+
+Workspace example:
+
+```json
+{
+  "servers": [
+    {
+      "id": "local-dev",
+      "host": "192.168.1.20",
+      "port": 22,
+      "username": "ubuntu",
+      "auth": {
+        "kind": "password",
+        "secret": "plain-text-password"
+      }
+    }
+  ]
+}
+```
+
+Global example:
+
+```json
+{
+  "servers": [
+    {
+      "id": "prod-a",
+      "host": "10.0.0.5",
+      "port": 22,
+      "username": "ubuntu",
+      "auth": {
+        "kind": "privateKey",
+        "privateKeyPath": "/Users/me/.ssh/prod-a.pem"
+      }
+    }
+  ]
+}
+```
 
 ## Manual OpenCode Smoke Test
 

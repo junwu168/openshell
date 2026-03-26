@@ -1,7 +1,14 @@
+import { access } from "node:fs/promises"
 import { createInterface } from "node:readline/promises"
-import { stdin, stdout, stderr } from "node:process"
+import { stderr, stdin, stdout } from "node:process"
 import { ensureRuntimeDirs, runtimePaths, workspaceRegistryFile } from "../core/paths.js"
-import { createServerRegistry, type ServerRecord, type ServerRegistry } from "../core/registry/server-registry.js"
+import {
+  createServerRegistry,
+  type RegistryScope,
+  type ResolvedServerRecord,
+  type ServerRecord,
+  type ServerRegistry,
+} from "../core/registry/server-registry.js"
 
 type PromptAdapter = {
   text(message: string, defaultValue?: string): Promise<string>
@@ -14,27 +21,21 @@ type WritableLike = {
   write(chunk: string): void
 }
 
-type CliRegistry = {
-  list(): Promise<ServerRecord[]>
-  resolve(id: string): Promise<ServerRecord | null>
-  upsert(record: ServerRecord): Promise<void>
-  remove(id: string): Promise<boolean>
-}
-
 type CliDeps = {
-  registry: CliRegistry
+  registry: Pick<ServerRegistry, "list" | "resolve" | "listRaw" | "upsert" | "remove">
   prompt: PromptAdapter
   stdout: WritableLike
   stderr: WritableLike
+  workspaceRoot: string
 }
 
 const usage = [
   "Usage: bun run server-registry <add|list|remove>",
   "",
   "Commands:",
-  "  add      interactively add or update a password-based server",
-  "  list     print configured servers without secrets",
-  "  remove   remove a configured server by id",
+  "  add      interactively add or update a server across workspace/global scopes",
+  "  list     print configured servers with scope metadata",
+  "  remove   remove a configured server by id and scope",
 ].join("\n")
 
 const parseList = (input: string) => {
@@ -48,21 +49,6 @@ const parseList = (input: string) => {
 
 const describeServer = (record: Pick<ServerRecord, "id" | "host" | "port" | "username">) =>
   `${record.id} (${record.host}:${record.port} as ${record.username})`
-
-const createCliRegistry = (registry: Pick<ServerRegistry, "listRaw" | "upsert" | "remove">): CliRegistry => ({
-  async list() {
-    return registry.listRaw("global")
-  },
-  async resolve(id) {
-    return (await registry.listRaw("global")).find((record) => record.id === id) ?? null
-  },
-  async upsert(record) {
-    await registry.upsert("global", record)
-  },
-  async remove(id) {
-    return registry.remove("global", id)
-  },
-})
 
 const createConsolePrompt = (): PromptAdapter => {
   const askText = async (message: string) => {
@@ -147,18 +133,144 @@ const createConsolePrompt = (): PromptAdapter => {
 const createDefaultDeps = async (): Promise<CliDeps> => {
   await ensureRuntimeDirs()
   const workspaceRoot = process.cwd()
-  const registry = createServerRegistry({
-    globalRegistryFile: runtimePaths.globalRegistryFile,
-    workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
-    workspaceRoot,
-  })
 
   return {
-    registry: createCliRegistry(registry),
+    registry: createServerRegistry({
+      globalRegistryFile: runtimePaths.globalRegistryFile,
+      workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
+      workspaceRoot,
+    }),
     prompt: createConsolePrompt(),
     stdout: { write: (chunk) => stdout.write(chunk) },
     stderr: { write: (chunk) => stderr.write(chunk) },
+    workspaceRoot,
   }
+}
+
+const getRawRecord = async (registry: CliDeps["registry"], scope: RegistryScope, id: string) =>
+  (await registry.listRaw(scope)).find((record) => record.id === id) ?? null
+
+const workspaceScopeExists = async (workspaceRoot: string) => {
+  try {
+    await access(workspaceRegistryFile(workspaceRoot))
+    return true
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false
+    }
+
+    throw error
+  }
+}
+
+const promptScope = async (
+  deps: CliDeps,
+  message: string,
+  defaultScope: RegistryScope,
+): Promise<RegistryScope | null> => {
+  const answer = (await deps.prompt.text(message, defaultScope)).trim().toLowerCase()
+  if (answer === "") {
+    return defaultScope
+  }
+
+  if (answer === "global" || answer === "g") {
+    return "global"
+  }
+
+  if (answer === "workspace" || answer === "w") {
+    return "workspace"
+  }
+
+  deps.stderr.write(`Invalid scope: ${answer}\n`)
+  return null
+}
+
+const promptAuthKind = async (
+  deps: CliDeps,
+  defaultKind: ServerRecord["auth"]["kind"] = "password",
+): Promise<ServerRecord["auth"]["kind"] | null> => {
+  const answer = (await deps.prompt.text("Auth kind (password/privateKey/certificate)", defaultKind)).trim()
+  if (answer === "") {
+    return defaultKind
+  }
+
+  switch (answer.toLowerCase()) {
+    case "password":
+      return "password"
+    case "privatekey":
+      return "privateKey"
+    case "certificate":
+      return "certificate"
+    default:
+      deps.stderr.write(`Invalid auth kind: ${answer}\n`)
+      return null
+  }
+}
+
+const promptAuth = async (
+  deps: CliDeps,
+  kind: ServerRecord["auth"]["kind"],
+  existingAuth?: ServerRecord["auth"],
+): Promise<ServerRecord["auth"] | null> => {
+  if (kind === "password") {
+    const secret = await deps.prompt.password("Password")
+    if (!secret) {
+      deps.stderr.write("Password is required.\n")
+      return null
+    }
+
+    deps.stdout.write("Warning: plain-text password will be stored as-is.\n")
+    return { kind, secret }
+  }
+
+  if (kind === "privateKey") {
+    const privateKeyPath = await deps.prompt.text("Private key path", existingAuth?.kind === "privateKey" ? existingAuth.privateKeyPath : undefined)
+    if (!privateKeyPath) {
+      deps.stderr.write("Private key path is required.\n")
+      return null
+    }
+
+    const passphrase = (await deps.prompt.text(
+      "Passphrase (optional)",
+      existingAuth && "passphrase" in existingAuth ? existingAuth.passphrase ?? "" : "",
+    )).trim()
+
+    return {
+      kind,
+      privateKeyPath,
+      ...(passphrase ? { passphrase } : {}),
+    } as ServerRecord["auth"]
+  }
+
+  const certificatePath = await deps.prompt.text(
+    "Certificate path",
+    existingAuth?.kind === "certificate" ? existingAuth.certificatePath : undefined,
+  )
+  if (!certificatePath) {
+    deps.stderr.write("Certificate path is required.\n")
+    return null
+  }
+
+  const privateKeyPath = await deps.prompt.text(
+    "Private key path",
+    existingAuth?.kind === "certificate" ? existingAuth.privateKeyPath : undefined,
+  )
+  if (!privateKeyPath) {
+    deps.stderr.write("Private key path is required.\n")
+    return null
+  }
+
+  const passphrase = (await deps.prompt.text(
+    "Passphrase (optional)",
+    existingAuth && "passphrase" in existingAuth ? existingAuth.passphrase ?? "" : "",
+  )).trim()
+
+  return {
+    kind,
+    certificatePath,
+    privateKeyPath,
+    ...(passphrase ? { passphrase } : {}),
+  } as ServerRecord["auth"]
 }
 
 const handleAdd = async (deps: CliDeps, idArg?: string) => {
@@ -168,7 +280,15 @@ const handleAdd = async (deps: CliDeps, idArg?: string) => {
     return 1
   }
 
-  const existing = await deps.registry.resolve(id)
+  const defaultScope = (await workspaceScopeExists(deps.workspaceRoot)) ? "workspace" : "global"
+  const scope = await promptScope(deps, "Server scope (global/workspace)", defaultScope)
+  if (!scope) {
+    return 1
+  }
+
+  const existing = await getRawRecord(deps.registry, scope, id)
+  const resolvedExisting = await deps.registry.resolve(id)
+
   if (existing) {
     const overwrite = await deps.prompt.confirm(`Overwrite existing server ${describeServer(existing)}?`)
     if (!overwrite) {
@@ -177,40 +297,57 @@ const handleAdd = async (deps: CliDeps, idArg?: string) => {
     }
   }
 
-  const host = await deps.prompt.text("Host", existing?.host)
-  const portRaw = await deps.prompt.text("Port", String(existing?.port ?? 22))
+  if (scope === "workspace" && resolvedExisting?.scope === "global") {
+    deps.stdout.write(
+      `Warning: workspace record ${id} will override global entry ${describeServer(resolvedExisting)}.\n`,
+    )
+  }
+
+  const host = await deps.prompt.text("Host", existing?.host ?? resolvedExisting?.host)
+  if (!host) {
+    deps.stderr.write("Host is required.\n")
+    return 1
+  }
+
+  const portRaw = await deps.prompt.text("Port", String(existing?.port ?? resolvedExisting?.port ?? 22))
   const port = Number.parseInt(portRaw, 10)
   if (!Number.isInteger(port) || port <= 0) {
     deps.stderr.write(`Invalid port: ${portRaw}\n`)
     return 1
   }
 
-  const username = await deps.prompt.text("Username", existing?.username)
+  const username = await deps.prompt.text("Username", existing?.username ?? resolvedExisting?.username)
   if (!username) {
     deps.stderr.write("Username is required.\n")
     return 1
   }
 
-  const labels = parseList(await deps.prompt.text("Labels (comma-separated)", existing?.labels?.join(",") ?? ""))
-  const groups = parseList(await deps.prompt.text("Groups (comma-separated)", existing?.groups?.join(",") ?? ""))
-  const password = await deps.prompt.password("Password")
-  if (!password) {
-    deps.stderr.write("Password is required.\n")
+  const labels = parseList(
+    await deps.prompt.text("Labels (comma-separated)", existing?.labels?.join(",") ?? resolvedExisting?.labels?.join(",") ?? ""),
+  )
+  const groups = parseList(
+    await deps.prompt.text("Groups (comma-separated)", existing?.groups?.join(",") ?? resolvedExisting?.groups?.join(",") ?? ""),
+  )
+
+  const authKind = await promptAuthKind(deps, existing?.auth.kind ?? resolvedExisting?.auth.kind ?? "password")
+  if (!authKind) {
     return 1
   }
 
-  await deps.registry.upsert({
+  const auth = await promptAuth(deps, authKind, existing?.auth ?? resolvedExisting?.auth)
+  if (!auth) {
+    return 1
+  }
+
+  await deps.registry.upsert(scope, {
     id,
     host,
     port,
     username,
     ...(labels ? { labels } : {}),
     ...(groups ? { groups } : {}),
-    auth: {
-      kind: "password",
-      secret: password,
-    },
-  })
+    auth,
+  } as ServerRecord)
 
   deps.stdout.write(`Saved server ${id} (${host}:${port}).\n`)
   return 0
@@ -223,11 +360,13 @@ const handleList = async (deps: CliDeps) => {
     return 0
   }
 
-  deps.stdout.write("ID\tHOST\tPORT\tUSERNAME\tLABELS\tGROUPS\n")
-  for (const record of records) {
+  deps.stdout.write("ID\tSCOPE\tSTATUS\tHOST\tPORT\tUSERNAME\tLABELS\tGROUPS\n")
+  for (const record of records as ResolvedServerRecord[]) {
     deps.stdout.write(
       [
         record.id,
+        record.scope,
+        record.shadowingGlobal ? "shadowing global" : "",
         record.host,
         String(record.port),
         record.username,
@@ -241,21 +380,38 @@ const handleList = async (deps: CliDeps) => {
 }
 
 const handleRemove = async (deps: CliDeps, idArg?: string) => {
-  const records = await deps.registry.list()
-  if (records.length === 0) {
-    deps.stdout.write("No servers configured.\n")
-    return 0
-  }
-
   const id = idArg ?? (await deps.prompt.text("Server id to remove"))
   if (!id) {
     deps.stderr.write("Server id is required.\n")
     return 1
   }
 
-  const existing = await deps.registry.resolve(id)
-  if (!existing) {
+  const [globalRecord, workspaceRecord] = await Promise.all([
+    getRawRecord(deps.registry, "global", id),
+    getRawRecord(deps.registry, "workspace", id),
+  ])
+
+  if (!globalRecord && !workspaceRecord) {
     deps.stderr.write(`Server ${id} not found.\n`)
+    return 1
+  }
+
+  let scope: RegistryScope
+  if (globalRecord && workspaceRecord) {
+    const defaultScope = workspaceRecord ? "workspace" : "global"
+    const selectedScope = await promptScope(deps, "Remove from which scope (global/workspace)", defaultScope)
+    if (!selectedScope) {
+      return 1
+    }
+
+    scope = selectedScope
+  } else {
+    scope = workspaceRecord ? "workspace" : "global"
+  }
+
+  const existing = scope === "workspace" ? workspaceRecord : globalRecord
+  if (!existing) {
+    deps.stderr.write(`Server ${id} not found in ${scope}.\n`)
     return 1
   }
 
@@ -265,8 +421,13 @@ const handleRemove = async (deps: CliDeps, idArg?: string) => {
     return 0
   }
 
-  await deps.registry.remove(id)
-  deps.stdout.write(`Removed server ${id}.\n`)
+  const removed = await deps.registry.remove(scope, id)
+  if (!removed) {
+    deps.stderr.write(`Server ${id} not found in ${scope}.\n`)
+    return 1
+  }
+
+  deps.stdout.write(`Removed server ${id} from ${scope}.\n`)
   return 0
 }
 

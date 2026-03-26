@@ -58,3 +58,8 @@ export const runOpenShellCli = async (argv: string[], deps?: Partial<OpenShellCl
 }
 
 export const main = async (argv: string[] = process.argv.slice(2)) => runOpenShellCli(argv)
+
+main().catch((err) => {
+  console.error(err)
+  process.exit(1)
+})

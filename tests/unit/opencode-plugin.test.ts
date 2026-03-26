@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, mock, test } from "bun:test"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { chdir, cwd } from "node:process"
 import type { ToolContext } from "@opencode-ai/plugin"
@@ -121,6 +121,88 @@ describe("OpenCode plugin", () => {
     }
 
     expect(workspaceRoots).toEqual(["/tmp/project-worktree"])
+  })
+
+  test("derives runtime registry paths from the OpenCode worktree at call time", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "opencode-plugin-env-"))
+    const firstConfigDir = join(tempDir, "config-a")
+    const firstDataDir = join(tempDir, "data-a")
+    const secondConfigDir = join(tempDir, "config-b")
+    const secondDataDir = join(tempDir, "data-b")
+    const registryCalls: Array<Record<string, unknown>> = []
+    const runtimePathCalls: string[] = []
+
+    try {
+      mock.module("../../src/core/paths", () => ({
+        createRuntimePaths: (workspaceRoot: string) => {
+          runtimePathCalls.push(workspaceRoot)
+          return {
+            configDir: secondConfigDir,
+            dataDir: secondDataDir,
+            globalRegistryFile: join(secondConfigDir, "servers.json"),
+            workspaceRegistryFile: join(workspaceRoot, ".open-code", "servers.json"),
+            auditLogFile: join(secondDataDir, "audit", "actions.jsonl"),
+            auditRepoDir: join(secondDataDir, "audit", "repo"),
+          }
+        },
+        runtimePaths: {
+          configDir: firstConfigDir,
+          dataDir: firstDataDir,
+          globalRegistryFile: join(firstConfigDir, "servers.json"),
+          workspaceRegistryFile: join(firstConfigDir, ".open-code", "servers.json"),
+          auditLogFile: join(firstDataDir, "audit", "actions.jsonl"),
+          auditRepoDir: join(firstDataDir, "audit", "repo"),
+        },
+        workspaceRegistryFile: (workspaceRoot: string) => join(workspaceRoot, ".open-code", "servers.json"),
+        ensureRuntimeDirs: async () => {},
+      }))
+      mock.module("../../src/core/registry/server-registry", () => ({
+        createServerRegistry: (options: Record<string, unknown>) => {
+          registryCalls.push(options)
+          return createRuntimeDependencies().registry
+        },
+      }))
+      mock.module("../../src/core/audit/log-store", () => ({
+        createAuditLogStore: () => ({
+          preflight: async () => {},
+          append: async () => {},
+        }),
+      }))
+      mock.module("../../src/core/audit/git-audit-repo", () => ({
+        createGitAuditRepo: () => ({
+          preflight: async () => {},
+          captureChange: async () => {},
+        }),
+      }))
+      mock.module("../../src/core/ssh/ssh-runtime", () => ({
+        createSshRuntime: () => createRuntimeDependencies().ssh,
+      }))
+
+      const { createOpenCodePlugin } = await import("../../src/opencode/plugin?runtime-path-check")
+      const plugin = createOpenCodePlugin({
+        ensureRuntimeDirs: async () => {},
+      })
+
+      await plugin({
+        client: {} as never,
+        project: {} as never,
+        directory: "/tmp/project",
+        worktree: "/tmp/project-worktree",
+        serverUrl: new URL("http://localhost"),
+        $: {} as never,
+      })
+
+      expect(runtimePathCalls).toEqual(["/tmp/project-worktree"])
+      expect(registryCalls).toHaveLength(1)
+      expect(registryCalls[0]).toMatchObject({
+        globalRegistryFile: join(secondConfigDir, "servers.json"),
+        workspaceRegistryFile: "/tmp/project-worktree/.open-code/servers.json",
+        workspaceRoot: "/tmp/project-worktree",
+      })
+    } finally {
+      mock.restore()
+      await rm(tempDir, { recursive: true, force: true })
+    }
   })
 
   test("does not ask for approval before safe remote exec commands", async () => {

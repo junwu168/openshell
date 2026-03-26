@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import { createOrchestrator } from "../../src/core/orchestrator"
-import type { ServerRecord } from "../../src/core/registry/server-registry"
+import type { ResolvedServerRecord, ServerRecord } from "../../src/core/registry/server-registry"
 
 const createServerRecord = (id: string): ServerRecord => ({
   id,
@@ -11,6 +14,21 @@ const createServerRecord = (id: string): ServerRecord => ({
     kind: "password",
     secret: "openpass",
   },
+})
+
+const createResolvedServerRecord = (
+  overrides: Partial<ResolvedServerRecord> & Pick<ResolvedServerRecord, "scope">,
+): ResolvedServerRecord => ({
+  id: "prod-a",
+  host: "prod-a.example",
+  port: 22,
+  username: "open",
+  auth: {
+    kind: "password",
+    secret: "openpass",
+  },
+  workspaceRoot: "/repo",
+  ...overrides,
 })
 
 const createStubSsh = (overrides: Partial<ReturnType<typeof createStubSshBase>> = {}) => ({
@@ -106,6 +124,182 @@ describe("tool orchestrator", () => {
         policyDecision: "approval-required",
       }),
     ])
+  })
+
+  test("remote_exec reads workspace-relative privateKeyPath values at runtime", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "open-code-auth-"))
+    const workspaceRoot = join(tempDir, "repo")
+    const keyPath = join(workspaceRoot, "keys", "id_rsa")
+    const execCalls: Array<{ connection: Record<string, unknown>; command: string }> = []
+
+    try {
+      await mkdir(join(workspaceRoot, "keys"), { recursive: true })
+      await writeFile(keyPath, "PRIVATE KEY")
+
+      const orchestrator = createOrchestrator({
+        registry: {
+          list: async () => [],
+          resolve: async () =>
+            createResolvedServerRecord({
+              scope: "workspace",
+              workspaceRoot,
+              auth: {
+                kind: "privateKey",
+                privateKeyPath: "keys/id_rsa",
+              },
+            }),
+        },
+        policy: { classifyRemoteExec: () => ({ decision: "auto-allow", reason: "safe inspection command" }) },
+        ssh: createStubSsh({
+          exec: async (connection, command) => {
+            execCalls.push({ connection: connection as Record<string, unknown>, command })
+            return { stdout: "ok", stderr: "", exitCode: 0 }
+          },
+        }),
+        audit: createStubAudit(),
+      })
+
+      const result = await orchestrator.remoteExec({
+        server: "prod-a",
+        command: "cat /etc/hosts",
+      })
+
+      expect(result).toMatchObject({ status: "ok", data: { stdout: "ok", exitCode: 0 } })
+      expect(execCalls).toHaveLength(1)
+      expect(execCalls[0]?.connection).toMatchObject({
+        host: "prod-a.example",
+        username: "open",
+        privateKey: "PRIVATE KEY",
+      })
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test("missing privateKeyPath returns KEY_PATH_NOT_FOUND before SSH execution", async () => {
+    let execCalled = false
+    const orchestrator = createOrchestrator({
+      registry: {
+        list: async () => [],
+        resolve: async () =>
+          createResolvedServerRecord({
+            scope: "workspace",
+            workspaceRoot: "/workspace",
+            auth: {
+              kind: "privateKey",
+              privateKeyPath: "keys/missing-id_rsa",
+            },
+          }),
+      },
+      policy: { classifyRemoteExec: () => ({ decision: "auto-allow", reason: "safe inspection command" }) },
+      ssh: createStubSsh({
+        exec: async () => {
+          execCalled = true
+          return { stdout: "ok", stderr: "", exitCode: 0 }
+        },
+      }),
+      audit: createStubAudit(),
+    })
+
+    const result = await orchestrator.remoteExec({
+      server: "prod-a",
+      command: "cat /etc/hosts",
+    })
+
+    expect(execCalled).toBe(false)
+    expect(result).toMatchObject({
+      status: "error",
+      code: "KEY_PATH_NOT_FOUND",
+      execution: { attempted: false, completed: false },
+    })
+  })
+
+  test("missing certificatePath returns CERTIFICATE_PATH_NOT_FOUND before SSH execution", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "open-code-auth-"))
+    const workspaceRoot = join(tempDir, "repo")
+    const privateKeyPath = join(workspaceRoot, "keys", "client-key.pem")
+    let execCalled = false
+
+    try {
+      await mkdir(join(workspaceRoot, "keys"), { recursive: true })
+      await writeFile(privateKeyPath, "PRIVATE KEY")
+
+      const orchestrator = createOrchestrator({
+        registry: {
+          list: async () => [],
+          resolve: async () =>
+            createResolvedServerRecord({
+              scope: "workspace",
+              workspaceRoot,
+              auth: {
+                kind: "certificate",
+                certificatePath: "certs/client-cert.pem",
+                privateKeyPath: "keys/client-key.pem",
+              },
+            }),
+        },
+        policy: { classifyRemoteExec: () => ({ decision: "auto-allow", reason: "safe inspection command" }) },
+        ssh: createStubSsh({
+          exec: async () => {
+            execCalled = true
+            return { stdout: "ok", stderr: "", exitCode: 0 }
+          },
+        }),
+        audit: createStubAudit(),
+      })
+
+      const result = await orchestrator.remoteExec({
+        server: "prod-a",
+        command: "cat /etc/hosts",
+      })
+
+      expect(execCalled).toBe(false)
+      expect(result).toMatchObject({
+        status: "error",
+        code: "CERTIFICATE_PATH_NOT_FOUND",
+        execution: { attempted: false, completed: false },
+      })
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test("global relative auth paths are rejected before SSH execution", async () => {
+    let execCalled = false
+    const orchestrator = createOrchestrator({
+      registry: {
+        list: async () => [],
+        resolve: async () =>
+          createResolvedServerRecord({
+            scope: "global",
+            workspaceRoot: undefined,
+            auth: {
+              kind: "privateKey",
+              privateKeyPath: "./keys/id_rsa",
+            },
+          }),
+      },
+      policy: { classifyRemoteExec: () => ({ decision: "auto-allow", reason: "safe inspection command" }) },
+      ssh: createStubSsh({
+        exec: async () => {
+          execCalled = true
+          return { stdout: "ok", stderr: "", exitCode: 0 }
+        },
+      }),
+      audit: createStubAudit(),
+    })
+
+    const result = await orchestrator.remoteExec({
+      server: "prod-a",
+      command: "cat /etc/hosts",
+    })
+
+    expect(execCalled).toBe(false)
+    expect(result).toMatchObject({
+      status: "error",
+      code: "AUTH_PATH_INVALID",
+      execution: { attempted: false, completed: false },
+    })
   })
 
   test("returns structured not-found errors for reads", async () => {

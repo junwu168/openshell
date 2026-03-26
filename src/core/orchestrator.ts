@@ -180,6 +180,7 @@ const toConnectConfig = (tool: string, server: ResolvedServerRecord): ConnectCon
       return {
         ...base,
         privateKey: privateKey.content,
+        ...(server.auth.passphrase ? { passphrase: server.auth.passphrase } : {}),
       }
     }
     case "certificate": {
@@ -196,6 +197,7 @@ const toConnectConfig = (tool: string, server: ResolvedServerRecord): ConnectCon
       return {
         ...base,
         privateKey: privateKey.content,
+        ...(server.auth.passphrase ? { passphrase: server.auth.passphrase } : {}),
       }
     }
   }
@@ -237,6 +239,14 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
       return false
     }
   }
+
+  const isRegistryValidationError = (
+    error: unknown,
+  ): error is { code: "REGISTRY_RECORD_INVALID"; message: string } =>
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "REGISTRY_RECORD_INVALID" &&
+    typeof (error as { message?: unknown }).message === "string"
 
   const preflightLog = async <T>(tool: string, server?: string): Promise<ToolResult<T> | null> => {
     try {
@@ -282,6 +292,31 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     try {
       server = await registry.resolve(serverId)
     } catch (error) {
+      if (isRegistryValidationError(error)) {
+        const payload: ToolPayload<T> = {
+          tool,
+          server: serverId,
+          code: error.code,
+          message: error.message,
+          execution: { attempted: false, completed: false },
+          audit: { logWritten: false, snapshotStatus: "not-applicable" },
+        }
+
+        const logWritten = await appendLogSafe({
+          ...logEntry,
+          tool,
+          server: serverId,
+          approvalStatus,
+          code: error.code,
+          message: error.message,
+        })
+
+        return {
+          result: withAuditFlag("error", payload, logWritten),
+          server: null,
+        }
+      }
+
       const payload: ToolPayload<T> = {
         tool,
         server: serverId,
@@ -343,7 +378,7 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
 
     try {
       const servers = await registry.list()
-      const data = servers.map(({ auth: _auth, ...server }) => server)
+      const data = servers.map(({ auth: _auth, workspaceRoot: _workspaceRoot, ...server }) => server)
       const payload: ToolPayload<Array<Omit<ServerRecord, "auth">>> = {
         tool: "list_servers",
         data,
@@ -357,6 +392,23 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
       })
       return withAuditFlag("ok", payload, logWritten)
     } catch (error) {
+      if (isRegistryValidationError(error)) {
+        const payload: ToolPayload<Array<Omit<ServerRecord, "auth">>> = {
+          tool: "list_servers",
+          code: error.code,
+          message: error.message,
+          execution: { attempted: false, completed: false },
+          audit: { logWritten: false, snapshotStatus: "not-applicable" },
+        }
+        const logWritten = await appendLogSafe({
+          tool: "list_servers",
+          approvalStatus: "not-required",
+          code: error.code,
+          message: payload.message,
+        })
+        return withAuditFlag("error", payload, logWritten)
+      }
+
       const payload: ToolPayload<Array<Omit<ServerRecord, "auth">>> = {
         tool: "list_servers",
         code: "REGISTRY_LIST_FAILED",

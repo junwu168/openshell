@@ -48,6 +48,19 @@ export type ResolvedServerRecord = ServerRecord & {
   workspaceRoot?: string
 }
 
+export class RegistryRecordValidationError extends Error {
+  readonly code = "REGISTRY_RECORD_INVALID" as const
+
+  constructor(
+    readonly file: string,
+    readonly index: number,
+    message: string,
+  ) {
+    super(`Invalid registry record in ${file} at index ${index}: ${message}`)
+    this.name = "RegistryRecordValidationError"
+  }
+}
+
 export interface ServerRegistry {
   list(): Promise<ResolvedServerRecord[]>
   resolve(id: string): Promise<ResolvedServerRecord | null>
@@ -69,13 +82,131 @@ export interface CreateServerRegistryOptions {
   lockOptions?: FileLockOptions
 }
 
+const isRecordObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const validateString = (value: unknown, field: string, file: string, index: number) => {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new RegistryRecordValidationError(file, index, `${field} must be a non-empty string`)
+  }
+
+  return value
+}
+
+const validateStringArray = (
+  value: unknown,
+  field: string,
+  file: string,
+  index: number,
+): string[] | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
+
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim() === "")) {
+    throw new RegistryRecordValidationError(file, index, `${field} must be an array of non-empty strings`)
+  }
+
+  return value
+}
+
+const validateMetadata = (
+  value: unknown,
+  file: string,
+  index: number,
+): Record<string, ServerMetadataValue> | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
+
+  if (!isRecordObject(value)) {
+    throw new RegistryRecordValidationError(file, index, "metadata must be an object")
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof key !== "string" || key.trim() === "") {
+      throw new RegistryRecordValidationError(file, index, "metadata keys must be non-empty strings")
+    }
+
+    if (
+      !(
+        typeof entry === "string" ||
+        typeof entry === "number" ||
+        typeof entry === "boolean" ||
+        entry === null
+      )
+    ) {
+      throw new RegistryRecordValidationError(file, index, "metadata values must be strings, numbers, booleans, or null")
+    }
+  }
+
+  return value as Record<string, ServerMetadataValue>
+}
+
+const validateAuth = (auth: unknown, file: string, index: number): ServerAuthRecord => {
+  if (!isRecordObject(auth)) {
+    throw new RegistryRecordValidationError(file, index, "auth must be an object")
+  }
+
+  const kind = validateString(auth.kind, "auth.kind", file, index)
+  switch (kind) {
+    case "password":
+      return {
+        kind,
+        secret: validateString(auth.secret, "auth.secret", file, index),
+      }
+    case "privateKey":
+      return {
+        kind,
+        privateKeyPath: validateString(auth.privateKeyPath, "auth.privateKeyPath", file, index),
+        ...(typeof auth.passphrase === "string" ? { passphrase: auth.passphrase } : {}),
+      }
+    case "certificate":
+      return {
+        kind,
+        certificatePath: validateString(auth.certificatePath, "auth.certificatePath", file, index),
+        privateKeyPath: validateString(auth.privateKeyPath, "auth.privateKeyPath", file, index),
+        ...(typeof auth.passphrase === "string" ? { passphrase: auth.passphrase } : {}),
+      }
+    default:
+      throw new RegistryRecordValidationError(file, index, `unsupported auth kind: ${kind}`)
+  }
+}
+
+const validateRecord = (record: unknown, file: string, index: number): ServerRecord => {
+  if (!isRecordObject(record)) {
+    throw new RegistryRecordValidationError(file, index, "record must be an object")
+  }
+
+  const labels = validateStringArray(record.labels, "labels", file, index)
+  const groups = validateStringArray(record.groups, "groups", file, index)
+  const metadata = validateMetadata(record.metadata, file, index)
+
+  return {
+    id: validateString(record.id, "id", file, index),
+    host: validateString(record.host, "host", file, index),
+    port: (() => {
+      const port = record.port
+      if (typeof port !== "number" || !Number.isInteger(port) || port <= 0) {
+        throw new RegistryRecordValidationError(file, index, "port must be a positive integer")
+      }
+      return port
+    })(),
+    username: validateString(record.username, "username", file, index),
+    ...(labels ? { labels } : {}),
+    ...(groups ? { groups } : {}),
+    ...(metadata ? { metadata } : {}),
+    auth: validateAuth(record.auth, file, index),
+  }
+}
+
 const parseRecords = (raw: string, file: string) => {
   const parsed = JSON.parse(raw) as unknown
   if (!Array.isArray(parsed)) {
     throw new Error(`Invalid registry file: ${file}`)
   }
 
-  return parsed as ServerRecord[]
+  return parsed.map((record, index) => validateRecord(record, file, index))
 }
 
 const buildResolvedRecord = (

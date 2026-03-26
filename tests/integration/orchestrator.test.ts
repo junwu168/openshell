@@ -176,6 +176,114 @@ describe("tool orchestrator", () => {
     }
   })
 
+  test("remote_exec forwards privateKey passphrase into ssh2 connect config", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "open-code-auth-"))
+    const workspaceRoot = join(tempDir, "repo")
+    const keyPath = join(workspaceRoot, "keys", "id_rsa")
+    const execCalls: Array<{ connection: Record<string, unknown>; command: string }> = []
+
+    try {
+      await mkdir(join(workspaceRoot, "keys"), { recursive: true })
+      await writeFile(keyPath, "PRIVATE KEY")
+
+      const orchestrator = createOrchestrator({
+        registry: {
+          list: async () => [],
+          resolve: async () =>
+            createResolvedServerRecord({
+              scope: "workspace",
+              workspaceRoot,
+              auth: {
+                kind: "privateKey",
+                privateKeyPath: "keys/id_rsa",
+                passphrase: "key-passphrase",
+              },
+            }),
+        },
+        policy: { classifyRemoteExec: () => ({ decision: "auto-allow", reason: "safe inspection command" }) },
+        ssh: createStubSsh({
+          exec: async (connection, command) => {
+            execCalls.push({ connection: connection as Record<string, unknown>, command })
+            return { stdout: "ok", stderr: "", exitCode: 0 }
+          },
+        }),
+        audit: createStubAudit(),
+      })
+
+      const result = await orchestrator.remoteExec({
+        server: "prod-a",
+        command: "cat /etc/hosts",
+      })
+
+      expect(result).toMatchObject({ status: "ok", data: { stdout: "ok", exitCode: 0 } })
+      expect(execCalls).toHaveLength(1)
+      expect(execCalls[0]?.connection).toMatchObject({
+        host: "prod-a.example",
+        username: "open",
+        privateKey: "PRIVATE KEY",
+        passphrase: "key-passphrase",
+      })
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test("remote_exec forwards certificate passphrase into ssh2 connect config", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "open-code-auth-"))
+    const workspaceRoot = join(tempDir, "repo")
+    const certificatePath = join(workspaceRoot, "certs", "client-cert.pem")
+    const privateKeyPath = join(workspaceRoot, "keys", "client-key.pem")
+    const execCalls: Array<{ connection: Record<string, unknown>; command: string }> = []
+
+    try {
+      await mkdir(join(workspaceRoot, "certs"), { recursive: true })
+      await mkdir(join(workspaceRoot, "keys"), { recursive: true })
+      await writeFile(certificatePath, "CERTIFICATE")
+      await writeFile(privateKeyPath, "PRIVATE KEY")
+
+      const orchestrator = createOrchestrator({
+        registry: {
+          list: async () => [],
+          resolve: async () =>
+            createResolvedServerRecord({
+              scope: "workspace",
+              workspaceRoot,
+              auth: {
+                kind: "certificate",
+                certificatePath: "certs/client-cert.pem",
+                privateKeyPath: "keys/client-key.pem",
+                passphrase: "cert-passphrase",
+              },
+            }),
+        },
+        policy: { classifyRemoteExec: () => ({ decision: "auto-allow", reason: "safe inspection command" }) },
+        ssh: createStubSsh({
+          exec: async (connection, command) => {
+            execCalls.push({ connection: connection as Record<string, unknown>, command })
+            return { stdout: "ok", stderr: "", exitCode: 0 }
+          },
+        }),
+        audit: createStubAudit(),
+      })
+
+      const result = await orchestrator.remoteExec({
+        server: "prod-a",
+        command: "cat /etc/hosts",
+      })
+
+      expect(result).toMatchObject({ status: "ok", data: { stdout: "ok", exitCode: 0 } })
+      expect(execCalls).toHaveLength(1)
+      expect(execCalls[0]?.connection).toMatchObject({
+        host: "prod-a.example",
+        username: "open",
+        privateKey: "PRIVATE KEY",
+        passphrase: "cert-passphrase",
+      })
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
   test("missing privateKeyPath returns KEY_PATH_NOT_FOUND before SSH execution", async () => {
     const logs: Record<string, unknown>[] = []
     let execCalled = false
@@ -287,6 +395,63 @@ describe("tool orchestrator", () => {
           code: "CERTIFICATE_PATH_NOT_FOUND",
         }),
       ])
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test("malformed privateKey registry records fail before SSH execution", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "open-code-registry-"))
+    const workspaceRoot = join(tempDir, "repo")
+    const globalRegistryFile = join(tempDir, "config", "servers.json")
+    const workspaceRegistryFile = join(workspaceRoot, ".open-code", "servers.json")
+
+    try {
+      await mkdir(join(tempDir, "config"), { recursive: true })
+      await mkdir(join(workspaceRoot, ".open-code"), { recursive: true })
+      await writeFile(
+        workspaceRegistryFile,
+        JSON.stringify(
+          [
+            {
+              id: "prod-a",
+              host: "prod-a.example",
+              port: 22,
+              username: "open",
+              auth: { kind: "privateKey" },
+            },
+          ],
+          null,
+          2,
+        ),
+      )
+
+      const { createServerRegistry } = await import("../../src/core/registry/server-registry?validation")
+      const orchestrator = createOrchestrator({
+        registry: createServerRegistry({
+          globalRegistryFile,
+          workspaceRegistryFile,
+          workspaceRoot,
+        }),
+        policy: { classifyRemoteExec: () => ({ decision: "auto-allow", reason: "safe inspection command" }) },
+        ssh: createStubSsh({
+          exec: async () => {
+            throw new Error("ssh should not be called for malformed registry records")
+          },
+        }),
+        audit: createStubAudit(),
+      })
+
+      const result = await orchestrator.remoteExec({
+        server: "prod-a",
+        command: "cat /etc/hosts",
+      })
+
+      expect(result).toMatchObject({
+        status: "error",
+        code: "REGISTRY_RECORD_INVALID",
+        execution: { attempted: false, completed: false },
+      })
     } finally {
       await rm(tempDir, { recursive: true, force: true })
     }
@@ -536,7 +701,11 @@ describe("tool orchestrator", () => {
   test("lists servers without exposing auth material", async () => {
     const orchestrator = createOrchestrator({
       registry: {
-        list: async () => [createServerRecord("prod-a")],
+        list: async () => [
+          createResolvedServerRecord({
+            scope: "workspace",
+          }),
+        ],
         resolve: async () => createServerRecord("prod-a"),
       },
       ssh: createStubSsh(),
@@ -553,6 +722,7 @@ describe("tool orchestrator", () => {
       }),
     ])
     expect((result.data as Array<Record<string, unknown>>)[0]).not.toHaveProperty("auth")
+    expect((result.data as Array<Record<string, unknown>>)[0]).not.toHaveProperty("workspaceRoot")
   })
 
   test("builds remote find commands without reusing remote_exec policy gating", async () => {

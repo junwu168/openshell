@@ -177,6 +177,32 @@ describe("server registry", () => {
     expect(await registry.listRaw("workspace")).toEqual([workspaceRecord])
   })
 
+  test("rejects malformed privateKey auth records during load", async () => {
+    const registry = createRegistry()
+
+    await writeFile(
+      workspaceRegistryFile,
+      JSON.stringify(
+        [
+          {
+            id: "prod-a",
+            host: "10.0.0.10",
+            port: 22,
+            username: "root",
+            auth: { kind: "privateKey" },
+          },
+        ],
+        null,
+        2,
+      ),
+    )
+
+    await expect(registry.list()).rejects.toMatchObject({
+      code: "REGISTRY_RECORD_INVALID",
+      message: expect.stringContaining("auth.privateKeyPath"),
+    })
+  })
+
   test("reads wait for pending writes from the same registry instance", async () => {
     const lockFile = `${workspaceRegistryFile}.lock`
     const workspaceRecord = {

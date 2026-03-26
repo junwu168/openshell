@@ -308,6 +308,7 @@ describe("server registry", () => {
     const lockFile = `${workspaceRegistryFile}.lock`
     let releaseProcessStartTime!: () => void
     let firstBlocked!: () => void
+    let blockedOnce = false
     const blocked = new Promise<void>((resolve) => {
       firstBlocked = resolve
     })
@@ -318,7 +319,8 @@ describe("server registry", () => {
       workspaceRoot,
       lockOptions: {
         getProcessStartTime: async (pid) => {
-          if (pid === process.pid) {
+          if (pid === process.pid && !blockedOnce) {
+            blockedOnce = true
             await new Promise<void>((resolve) => {
               releaseProcessStartTime = resolve
               firstBlocked()

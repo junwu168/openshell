@@ -334,18 +334,7 @@ export const createServerRegistry = ({
         loadRaw("global"),
         loadRaw("workspace"),
       ])
-      const workspaceRecord = workspaceRecords.find((record) => record.id === id)
-      if (workspaceRecord) {
-        return buildResolvedRecord(
-          workspaceRecord,
-          "workspace",
-          workspaceRoot,
-          globalRecords.some((record) => record.id === id),
-        )
-      }
-
-      const globalRecord = globalRecords.find((record) => record.id === id)
-      return globalRecord ? buildResolvedRecord(globalRecord, "global", workspaceRoot) : null
+      return mergeRecords(globalRecords, workspaceRecords).find((record) => record.id === id) ?? null
     },
     async upsert(scope, record) {
       const file = scopeFile(scope)

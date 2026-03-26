@@ -12,7 +12,7 @@ const serialize = async <T>(result: Promise<T>) => JSON.stringify(await result)
 type RuntimeDependencies = Parameters<typeof createOrchestrator>[0]
 type OpenCodePluginOptions = {
   ensureRuntimeDirs?: () => Promise<void>
-  createRuntimeDependencies?: () => RuntimeDependencies
+  createRuntimeDependencies?: (workspaceRoot?: string) => RuntimeDependencies
 }
 
 type ApprovalRequest = Parameters<ToolContext["ask"]>[0]
@@ -205,8 +205,7 @@ const createTools = (orchestrator: ReturnType<typeof createOrchestrator>) => ({
   }),
 })
 
-const buildRuntimeDependencies = (): RuntimeDependencies => {
-  const workspaceRoot = process.cwd()
+const buildRuntimeDependencies = (workspaceRoot: string): RuntimeDependencies => {
   const registry = createServerRegistry({
     globalRegistryFile: runtimePaths.globalRegistryFile,
     workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
@@ -227,10 +226,12 @@ const buildRuntimeDependencies = (): RuntimeDependencies => {
   }
 }
 
-export const createOpenCodePlugin = (options: OpenCodePluginOptions = {}): Plugin => async () => {
+export const createOpenCodePlugin = (options: OpenCodePluginOptions = {}): Plugin => async (input) => {
   await (options.ensureRuntimeDirs ?? ensureRuntimeDirs)()
 
-  const orchestrator = createOrchestrator((options.createRuntimeDependencies ?? buildRuntimeDependencies)())
+  const orchestrator = createOrchestrator(
+    (options.createRuntimeDependencies ?? buildRuntimeDependencies)(input.worktree),
+  )
 
   return {
     tool: createTools(orchestrator),

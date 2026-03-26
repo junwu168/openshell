@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { readFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { chdir, cwd } from "node:process"
 import type { ToolContext } from "@opencode-ai/plugin"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 
 const toolNames = [
   "list_servers",
@@ -85,6 +88,39 @@ describe("OpenCode plugin", () => {
       execution: { attempted: true, completed: true },
       audit: { logWritten: true, snapshotStatus: "not-applicable" },
     })
+  })
+
+  test("builds runtime dependencies from the plugin worktree", async () => {
+    const { createOpenCodePlugin } = await import("../../src/opencode/plugin")
+    const tempDir = await mkdtemp(join(tmpdir(), "opencode-plugin-root-"))
+    const originalCwd = cwd()
+    const workspaceRoots: Array<string | undefined> = []
+
+    try {
+      chdir(tempDir)
+
+      const plugin = createOpenCodePlugin({
+        ensureRuntimeDirs: async () => {},
+        createRuntimeDependencies: (workspaceRoot) => {
+          workspaceRoots.push(workspaceRoot)
+          return createRuntimeDependencies()
+        },
+      })
+
+      await plugin({
+        client: {} as never,
+        project: {} as never,
+        directory: "/tmp/project",
+        worktree: "/tmp/project-worktree",
+        serverUrl: new URL("http://localhost"),
+        $: {} as never,
+      })
+    } finally {
+      chdir(originalCwd)
+      await rm(tempDir, { recursive: true, force: true })
+    }
+
+    expect(workspaceRoots).toEqual(["/tmp/project-worktree"])
   })
 
   test("does not ask for approval before safe remote exec commands", async () => {

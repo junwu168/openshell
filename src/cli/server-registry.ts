@@ -14,8 +14,15 @@ type WritableLike = {
   write(chunk: string): void
 }
 
+type CliRegistry = {
+  list(): Promise<ServerRecord[]>
+  resolve(id: string): Promise<ServerRecord | null>
+  upsert(record: ServerRecord): Promise<void>
+  remove(id: string): Promise<boolean>
+}
+
 type CliDeps = {
-  registry: Pick<ServerRegistry, "list" | "resolve" | "upsert" | "remove">
+  registry: CliRegistry
   prompt: PromptAdapter
   stdout: WritableLike
   stderr: WritableLike
@@ -41,6 +48,21 @@ const parseList = (input: string) => {
 
 const describeServer = (record: Pick<ServerRecord, "id" | "host" | "port" | "username">) =>
   `${record.id} (${record.host}:${record.port} as ${record.username})`
+
+const createCliRegistry = (registry: Pick<ServerRegistry, "listRaw" | "upsert" | "remove">): CliRegistry => ({
+  async list() {
+    return registry.listRaw("global")
+  },
+  async resolve(id) {
+    return (await registry.listRaw("global")).find((record) => record.id === id) ?? null
+  },
+  async upsert(record) {
+    await registry.upsert("global", record)
+  },
+  async remove(id) {
+    return registry.remove("global", id)
+  },
+})
 
 const createConsolePrompt = (): PromptAdapter => {
   const askText = async (message: string) => {
@@ -125,13 +147,14 @@ const createConsolePrompt = (): PromptAdapter => {
 const createDefaultDeps = async (): Promise<CliDeps> => {
   await ensureRuntimeDirs()
   const workspaceRoot = process.cwd()
+  const registry = createServerRegistry({
+    globalRegistryFile: runtimePaths.globalRegistryFile,
+    workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
+    workspaceRoot,
+  })
 
   return {
-    registry: createServerRegistry({
-      globalRegistryFile: runtimePaths.globalRegistryFile,
-      workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
-      workspaceRoot,
-    }),
+    registry: createCliRegistry(registry),
     prompt: createConsolePrompt(),
     stdout: { write: (chunk) => stdout.write(chunk) },
     stderr: { write: (chunk) => stderr.write(chunk) },
@@ -176,7 +199,7 @@ const handleAdd = async (deps: CliDeps, idArg?: string) => {
     return 1
   }
 
-  await deps.registry.upsert("workspace", {
+  await deps.registry.upsert({
     id,
     host,
     port,
@@ -242,7 +265,7 @@ const handleRemove = async (deps: CliDeps, idArg?: string) => {
     return 0
   }
 
-  await deps.registry.remove("workspace", id)
+  await deps.registry.remove(id)
   deps.stdout.write(`Removed server ${id}.\n`)
   return 0
 }

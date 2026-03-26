@@ -39,7 +39,7 @@ Workspace example:
       "kind": "password",
       "secret": "plain-text-password"
     }
-  ]
+  }
 ]
 ```
 
@@ -56,7 +56,7 @@ Global example:
       "kind": "privateKey",
       "privateKeyPath": "/Users/me/.ssh/prod-a.pem"
     }
-  ]
+  }
 ]
 ```
 

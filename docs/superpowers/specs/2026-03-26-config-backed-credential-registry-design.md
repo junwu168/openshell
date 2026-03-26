@@ -8,7 +8,7 @@ Status: Approved for planning
 
 Replace the current encrypted registry plus OS keychain dependency with a simpler layered config model:
 
-- Read server definitions from two config files: workspace first, then user-global.
+- Read server definitions from two config files: user-global first, then workspace override.
 - Let workspace entries override global entries with the same `id`.
 - Store password auth in plain text, documented as unsafe.
 - Store certificate and private-key auth as filesystem paths only.
@@ -90,7 +90,7 @@ The config file should remain intentionally small and explicit. Each file is a t
       "kind": "privateKey",
       "privateKeyPath": "./keys/prod-a.pem"
     }
-  ]
+  }
 ]
 ```
 

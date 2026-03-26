@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { createSshRuntime } from "../../src/core/ssh/ssh-runtime"
 import { startFakeSshServer } from "./fake-ssh-server"
+
+let createSshRuntime: typeof import("../../src/core/ssh/ssh-runtime").createSshRuntime
 
 describe("ssh runtime", () => {
   let server: Awaited<ReturnType<typeof startFakeSshServer>> | undefined
@@ -8,6 +9,7 @@ describe("ssh runtime", () => {
 
   beforeAll(async () => {
     server = await startFakeSshServer()
+    createSshRuntime = (await import("../../src/core/ssh/ssh-runtime?integration-real")).createSshRuntime
     runtime = createSshRuntime()
   }, { timeout: 60_000 })
 

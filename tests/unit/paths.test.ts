@@ -14,7 +14,7 @@ describe("runtime paths", () => {
         default: () => ({ config: configDir, data: dataDir }),
       }))
 
-      const { createRuntimePaths, runtimePaths } = await import("../../src/core/paths")
+      const { createRuntimePaths, runtimePaths } = await import("../../src/core/paths?runtime-paths-test-1")
       const runtime = createRuntimePaths("/repo")
 
       expect(runtime.globalRegistryFile.endsWith("servers.json")).toBe(true)
@@ -36,7 +36,7 @@ describe("runtime paths", () => {
         default: () => ({ config: configDir, data: dataDir }),
       }))
 
-      const { ensureRuntimeDirs, runtimePaths } = await import("../../src/core/paths")
+      const { ensureRuntimeDirs, runtimePaths } = await import("../../src/core/paths?runtime-paths-test-2")
       await ensureRuntimeDirs()
 
       const pathStat = await stat(runtimePaths.auditRepoDir)

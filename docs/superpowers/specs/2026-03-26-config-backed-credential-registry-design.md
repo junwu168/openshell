@@ -75,25 +75,23 @@ The runtime should treat the presence of a workspace file as opt-in local overri
 
 ### Data Model
 
-The config file should remain intentionally small and explicit:
+The config file should remain intentionally small and explicit. Each file is a top-level JSON array of server records:
 
 ```json
-{
-  "servers": [
-    {
-      "id": "prod-a",
-      "host": "10.0.0.5",
-      "port": 22,
-      "username": "ubuntu",
-      "labels": ["prod"],
-      "groups": ["cluster-a"],
-      "auth": {
-        "kind": "privateKey",
-        "privateKeyPath": "./keys/prod-a.pem"
-      }
+[
+  {
+    "id": "prod-a",
+    "host": "10.0.0.5",
+    "port": 22,
+    "username": "ubuntu",
+    "labels": ["prod"],
+    "groups": ["cluster-a"],
+    "auth": {
+      "kind": "privateKey",
+      "privateKeyPath": "./keys/prod-a.pem"
     }
   ]
-}
+]
 ```
 
 Supported auth shapes:

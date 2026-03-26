@@ -24,42 +24,40 @@ Workspace entries override global entries with the same `id`.
 Password auth is stored in plain text inside config. That is unsafe, but supported for convenience in trusted local setups.
 Key and certificate auth store file paths only, not PEM contents or private key material.
 
+Each config file is a top-level JSON array of server records.
+
 Workspace example:
 
 ```json
-{
-  "servers": [
-    {
-      "id": "local-dev",
-      "host": "192.168.1.20",
-      "port": 22,
-      "username": "ubuntu",
-      "auth": {
-        "kind": "password",
-        "secret": "plain-text-password"
-      }
+[
+  {
+    "id": "local-dev",
+    "host": "192.168.1.20",
+    "port": 22,
+    "username": "ubuntu",
+    "auth": {
+      "kind": "password",
+      "secret": "plain-text-password"
     }
   ]
-}
+]
 ```
 
 Global example:
 
 ```json
-{
-  "servers": [
-    {
-      "id": "prod-a",
-      "host": "10.0.0.5",
-      "port": 22,
-      "username": "ubuntu",
-      "auth": {
-        "kind": "privateKey",
-        "privateKeyPath": "/Users/me/.ssh/prod-a.pem"
-      }
+[
+  {
+    "id": "prod-a",
+    "host": "10.0.0.5",
+    "port": 22,
+    "username": "ubuntu",
+    "auth": {
+      "kind": "privateKey",
+      "privateKeyPath": "/Users/me/.ssh/prod-a.pem"
     }
   ]
-}
+]
 ```
 
 ## Manual OpenCode Smoke Test

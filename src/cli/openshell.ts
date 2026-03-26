@@ -1,4 +1,6 @@
 import { stderr, stdout } from "node:process"
+import { runInstallCli } from "../product/install.js"
+import { runUninstallCli } from "../product/uninstall.js"
 import { runServerRegistryCli } from "./server-registry.js"
 
 type WritableLike = {
@@ -22,17 +24,12 @@ const usage = [
   "  server-registry   manage configured remote servers",
 ].join("\n")
 
-const notImplemented = (command: string, stream: WritableLike) => async (_argv: string[]) => {
-  stream.write(`${command} is not implemented yet.\n`)
-  return 1
-}
-
 const createDefaultDeps = (): OpenShellCliDeps => ({
   stdout: { write: (chunk) => stdout.write(chunk) },
   stderr: { write: (chunk) => stderr.write(chunk) },
   runServerRegistryCli,
-  runInstallCli: notImplemented("install", stderr),
-  runUninstallCli: notImplemented("uninstall", stderr),
+  runInstallCli,
+  runUninstallCli,
 })
 
 export const runOpenShellCli = async (argv: string[], deps?: Partial<OpenShellCliDeps>) => {

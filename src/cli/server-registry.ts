@@ -142,7 +142,7 @@ const createDefaultDeps = async (): Promise<CliDeps> => {
       workspaceRegistryFile: workspaceRegistryFile(workspaceRoot),
       workspaceRoot,
     }),
-    workspaceTracker: createWorkspaceTracker(`${runtimePaths.dataDir}/workspaces.json`),
+    workspaceTracker: createWorkspaceTracker(runtimePaths.workspaceTrackerFile),
     prompt: createConsolePrompt(),
     stdout: { write: (chunk) => stdout.write(chunk) },
     stderr: { write: (chunk) => stderr.write(chunk) },

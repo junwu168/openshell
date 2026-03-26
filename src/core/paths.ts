@@ -10,6 +10,7 @@ export const createRuntimePaths = (workspaceRoot: string) => {
     configDir: openshellPaths.config,
     dataDir: openshellPaths.data,
     globalRegistryFile: `${openshellPaths.config}/servers.json`,
+    workspaceTrackerFile: `${openshellPaths.data}/workspaces.json`,
     opencodeConfigDir: opencodePaths.config,
     opencodeConfigFile: `${opencodePaths.config}/opencode.json`,
     workspaceRegistryDir: `${workspaceRoot}/.open-code`,

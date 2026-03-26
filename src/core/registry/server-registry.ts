@@ -14,12 +14,14 @@ export interface PasswordAuthRecord {
 export interface PrivateKeyAuthRecord {
   kind: "privateKey"
   privateKeyPath: string
+  passphrase?: string
 }
 
 export interface CertificateAuthRecord {
   kind: "certificate"
   certificatePath: string
   privateKeyPath: string
+  passphrase?: string
 }
 
 export type ServerAuthRecord =

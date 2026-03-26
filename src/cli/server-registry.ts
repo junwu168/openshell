@@ -167,43 +167,45 @@ const promptScope = async (
   deps: CliDeps,
   message: string,
   defaultScope: RegistryScope,
-): Promise<RegistryScope | null> => {
-  const answer = (await deps.prompt.text(message, defaultScope)).trim().toLowerCase()
-  if (answer === "") {
-    return defaultScope
-  }
+): Promise<RegistryScope> => {
+  while (true) {
+    const answer = (await deps.prompt.text(message, defaultScope)).trim().toLowerCase()
+    if (answer === "") {
+      return defaultScope
+    }
 
-  if (answer === "global" || answer === "g") {
-    return "global"
-  }
+    if (answer === "global" || answer === "g") {
+      return "global"
+    }
 
-  if (answer === "workspace" || answer === "w") {
-    return "workspace"
-  }
+    if (answer === "workspace" || answer === "w") {
+      return "workspace"
+    }
 
-  deps.stderr.write(`Invalid scope: ${answer}\n`)
-  return null
+    deps.stderr.write(`Invalid scope: ${answer}\n`)
+  }
 }
 
 const promptAuthKind = async (
   deps: CliDeps,
   defaultKind: ServerRecord["auth"]["kind"] = "password",
-): Promise<ServerRecord["auth"]["kind"] | null> => {
-  const answer = (await deps.prompt.text("Auth kind (password/privateKey/certificate)", defaultKind)).trim()
-  if (answer === "") {
-    return defaultKind
-  }
+): Promise<ServerRecord["auth"]["kind"]> => {
+  while (true) {
+    const answer = (await deps.prompt.text("Auth kind (password/privateKey/certificate)", defaultKind)).trim()
+    if (answer === "") {
+      return defaultKind
+    }
 
-  switch (answer.toLowerCase()) {
-    case "password":
-      return "password"
-    case "privatekey":
-      return "privateKey"
-    case "certificate":
-      return "certificate"
-    default:
-      deps.stderr.write(`Invalid auth kind: ${answer}\n`)
-      return null
+    switch (answer.toLowerCase()) {
+      case "password":
+        return "password"
+      case "privatekey":
+        return "privateKey"
+      case "certificate":
+        return "certificate"
+      default:
+        deps.stderr.write(`Invalid auth kind: ${answer}\n`)
+    }
   }
 }
 
@@ -282,9 +284,6 @@ const handleAdd = async (deps: CliDeps, idArg?: string) => {
 
   const defaultScope = (await workspaceScopeExists(deps.workspaceRoot)) ? "workspace" : "global"
   const scope = await promptScope(deps, "Server scope (global/workspace)", defaultScope)
-  if (!scope) {
-    return 1
-  }
 
   const existing = await getRawRecord(deps.registry, scope, id)
   const resolvedExisting = await deps.registry.resolve(id)
@@ -330,10 +329,6 @@ const handleAdd = async (deps: CliDeps, idArg?: string) => {
   )
 
   const authKind = await promptAuthKind(deps, existing?.auth.kind ?? resolvedExisting?.auth.kind ?? "password")
-  if (!authKind) {
-    return 1
-  }
-
   const auth = await promptAuth(deps, authKind, existing?.auth ?? resolvedExisting?.auth)
   if (!auth) {
     return 1
@@ -380,16 +375,24 @@ const handleList = async (deps: CliDeps) => {
 }
 
 const handleRemove = async (deps: CliDeps, idArg?: string) => {
+  const [globalRecords, workspaceRecords] = await Promise.all([
+    deps.registry.listRaw("global"),
+    deps.registry.listRaw("workspace"),
+  ])
+
+  if (globalRecords.length === 0 && workspaceRecords.length === 0) {
+    deps.stdout.write("No servers configured.\n")
+    return 0
+  }
+
   const id = idArg ?? (await deps.prompt.text("Server id to remove"))
   if (!id) {
     deps.stderr.write("Server id is required.\n")
     return 1
   }
 
-  const [globalRecord, workspaceRecord] = await Promise.all([
-    getRawRecord(deps.registry, "global", id),
-    getRawRecord(deps.registry, "workspace", id),
-  ])
+  const globalRecord = globalRecords.find((record) => record.id === id) ?? null
+  const workspaceRecord = workspaceRecords.find((record) => record.id === id) ?? null
 
   if (!globalRecord && !workspaceRecord) {
     deps.stderr.write(`Server ${id} not found.\n`)
@@ -398,13 +401,7 @@ const handleRemove = async (deps: CliDeps, idArg?: string) => {
 
   let scope: RegistryScope
   if (globalRecord && workspaceRecord) {
-    const defaultScope = workspaceRecord ? "workspace" : "global"
-    const selectedScope = await promptScope(deps, "Remove from which scope (global/workspace)", defaultScope)
-    if (!selectedScope) {
-      return 1
-    }
-
-    scope = selectedScope
+    scope = await promptScope(deps, "Remove from which scope (global/workspace)", "workspace")
   } else {
     scope = workspaceRecord ? "workspace" : "global"
   }

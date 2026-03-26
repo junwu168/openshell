@@ -217,6 +217,44 @@ describe("server registry cli", () => {
     )
   })
 
+  test("re-prompts for scope until a valid value is entered", async () => {
+    const workspaceRoot = await createWorkspaceRoot(true)
+    const registry = createInMemoryRegistry()
+    const prompt = createPrompt((call) => {
+      if (call.kind === "text" && call.message.includes("Server id")) return "prod-a"
+      if (call.kind === "text" && call.message.includes("Server scope")) {
+        const scopePrompts = prompt.calls.filter(
+          (entry) => entry.kind === "text" && entry.message.includes("Server scope"),
+        )
+        return scopePrompts.length === 1 ? "wrong-scope" : "workspace"
+      }
+      if (call.kind === "text" && call.message.includes("Host")) return "10.0.0.10"
+      if (call.kind === "text" && call.message.includes("Port")) return "22"
+      if (call.kind === "text" && call.message.includes("Username")) return "root"
+      if (call.kind === "text" && call.message.includes("Labels")) return ""
+      if (call.kind === "text" && call.message.includes("Groups")) return ""
+      if (call.kind === "text" && call.message.includes("Auth kind")) return "password"
+      if (call.kind === "password") return "super-secret"
+      return ""
+    })
+    const stdout = createWritable()
+    const stderr = createWritable()
+
+    await expect(
+      runCli(["add"], {
+        registry,
+        prompt,
+        stdout,
+        stderr,
+        workspaceRoot,
+      }),
+    ).resolves.toBe(0)
+
+    expect(prompt.calls.filter((entry) => entry.kind === "text" && entry.message.includes("Server scope"))).toHaveLength(2)
+    expect(stderr.toString()).toContain("Invalid scope")
+    expect(await registry.listRaw("workspace")).toHaveLength(1)
+  })
+
   test("prompts for password auth kind and warns before storing a plain-text password", async () => {
     const workspaceRoot = await createWorkspaceRoot(true)
     const registry = createInMemoryRegistry()
@@ -262,6 +300,52 @@ describe("server registry cli", () => {
       },
     ])
     expect(stderr.toString()).toBe("")
+  })
+
+  test("re-prompts for auth kind until a valid value is entered", async () => {
+    const workspaceRoot = await createWorkspaceRoot(true)
+    const registry = createInMemoryRegistry()
+    const prompt = createPrompt((call) => {
+      if (call.kind === "text" && call.message.includes("Server id")) return "prod-a"
+      if (call.kind === "text" && call.message.includes("Server scope")) return "workspace"
+      if (call.kind === "text" && call.message.includes("Host")) return "10.0.0.10"
+      if (call.kind === "text" && call.message.includes("Port")) return "22"
+      if (call.kind === "text" && call.message.includes("Username")) return "root"
+      if (call.kind === "text" && call.message.includes("Labels")) return ""
+      if (call.kind === "text" && call.message.includes("Groups")) return ""
+      if (call.kind === "text" && call.message.includes("Auth kind")) {
+        const authPrompts = prompt.calls.filter(
+          (entry) => entry.kind === "text" && entry.message.includes("Auth kind"),
+        )
+        return authPrompts.length === 1 ? "wrong-auth" : "privateKey"
+      }
+      if (call.kind === "text" && call.message.includes("Private key path")) return "./keys/id_rsa"
+      if (call.kind === "text" && call.message.includes("Passphrase")) return ""
+      return ""
+    })
+    const stderr = createWritable()
+
+    await expect(
+      runCli(["add"], {
+        registry,
+        prompt,
+        stdout: createWritable(),
+        stderr,
+        workspaceRoot,
+      }),
+    ).resolves.toBe(0)
+
+    expect(prompt.calls.filter((entry) => entry.kind === "text" && entry.message.includes("Auth kind"))).toHaveLength(2)
+    expect(stderr.toString()).toContain("Invalid auth kind")
+    expect(await registry.listRaw("workspace")).toEqual([
+      {
+        id: "prod-a",
+        host: "10.0.0.10",
+        port: 22,
+        username: "root",
+        auth: { kind: "privateKey", privateKeyPath: "./keys/id_rsa" },
+      },
+    ])
   })
 
   test("prompts for privateKey auth kind and stores the key path", async () => {
@@ -515,9 +599,35 @@ describe("server registry cli", () => {
       }),
     ).resolves.toBe(0)
 
-    expect(stdout.toString()).toContain("SCOPE")
-    expect(stdout.toString()).toContain("workspace")
-    expect(stdout.toString()).toContain("global")
-    expect(stdout.toString()).toContain("shadow")
+    expect(stdout.toString().split("\n").filter((line) => line.length > 0)).toEqual([
+      "ID\tSCOPE\tSTATUS\tHOST\tPORT\tUSERNAME\tLABELS\tGROUPS",
+      "prod-b\tglobal\t\t10.0.0.11\t22\tops\t\t",
+      "prod-a\tworkspace\tshadowing global\t10.0.0.99\t2222\tdeploy\t\t",
+    ])
+    expect(stdout.toString()).not.toContain("global-secret")
+    expect(stdout.toString()).not.toContain("/keys/prod-b")
+    expect(stdout.toString()).not.toContain("/certs/prod-a.crt")
+  })
+
+  test("remove preserves the empty-registry fast path", async () => {
+    const workspaceRoot = await createWorkspaceRoot(true)
+    const registry = createInMemoryRegistry()
+    const stdout = createWritable()
+    const stderr = createWritable()
+    const prompt = createPrompt(() => "prod-a")
+
+    await expect(
+      runCli(["remove"], {
+        registry,
+        prompt,
+        stdout,
+        stderr,
+        workspaceRoot,
+      }),
+    ).resolves.toBe(0)
+
+    expect(stdout.toString()).toContain("No servers configured.")
+    expect(stderr.toString()).toBe("")
+    expect(prompt.calls).toHaveLength(0)
   })
 })

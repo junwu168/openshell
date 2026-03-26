@@ -254,6 +254,24 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     }
   }
 
+  const logAuthFailure = async <T>(
+    tool: string,
+    approvalStatus: string,
+    logEntry: Record<string, unknown>,
+    result: ToolResult<T>,
+  ): Promise<ToolResult<T>> => {
+    const logWritten = await appendLogSafe({
+      ...logEntry,
+      tool,
+      server: result.server,
+      approvalStatus,
+      code: result.code,
+      message: result.message,
+    })
+
+    return withAuditFlag("error", result, logWritten)
+  }
+
   const resolveServer = async <T>(
     tool: string,
     serverId: string,
@@ -401,7 +419,12 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     try {
       const connection = toConnectConfig("remote_exec", resolved.server!)
       if ("status" in connection) {
-        return connection
+        return logAuthFailure(
+          "remote_exec",
+          approvalStatus,
+          { command: input.command, cwd: input.cwd, timeout: input.timeout },
+          connection,
+        )
       }
 
       const executed = await ssh.exec(connection, input.command, {
@@ -475,7 +498,12 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     try {
       const connection = toConnectConfig("remote_read_file", resolved.server!)
       if ("status" in connection) {
-        return connection
+        return logAuthFailure(
+          "remote_read_file",
+          "not-required",
+          { path: input.path, offset: input.offset, length: input.length },
+          connection,
+        )
       }
 
       const body = await ssh.readFile(connection, input.path)
@@ -536,7 +564,7 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
 
     const connection = toConnectConfig("remote_write_file", resolved.server!)
     if ("status" in connection) {
-      return connection
+      return logAuthFailure("remote_write_file", "host-managed-required", { path: input.path, mode: input.mode }, connection)
     }
 
     try {
@@ -651,7 +679,7 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
 
     const connection = toConnectConfig("remote_patch_file", resolved.server!)
     if ("status" in connection) {
-      return connection
+      return logAuthFailure("remote_patch_file", "host-managed-required", { path: input.path }, connection)
     }
 
     let before: string
@@ -810,7 +838,12 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     try {
       const connection = toConnectConfig("remote_list_dir", resolved.server!)
       if ("status" in connection) {
-        return connection
+        return logAuthFailure(
+          "remote_list_dir",
+          "not-required",
+          { path: input.path, recursive: input.recursive ?? false, limit: input.limit ?? 200 },
+          connection,
+        )
       }
 
       const entries = await ssh.listDir(connection, input.path, input.recursive ?? false, input.limit ?? 200)
@@ -870,7 +903,7 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     try {
       const connection = toConnectConfig("remote_stat", resolved.server!)
       if ("status" in connection) {
-        return connection
+        return logAuthFailure("remote_stat", "not-required", { path: input.path }, connection)
       }
 
       const stat = await ssh.stat(connection, input.path)
@@ -933,7 +966,12 @@ export const createOrchestrator = ({ registry, ssh, audit, policy = { classifyRe
     try {
       const connection = toConnectConfig("remote_find", resolved.server!)
       if ("status" in connection) {
-        return connection
+        return logAuthFailure(
+          "remote_find",
+          "not-required",
+          { path: input.path, pattern: input.pattern, glob: input.glob, limit: input.limit },
+          connection,
+        )
       }
 
       const executed = await ssh.exec(connection, command)

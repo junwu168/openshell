@@ -177,6 +177,7 @@ describe("tool orchestrator", () => {
   })
 
   test("missing privateKeyPath returns KEY_PATH_NOT_FOUND before SSH execution", async () => {
+    const logs: Record<string, unknown>[] = []
     let execCalled = false
     const orchestrator = createOrchestrator({
       registry: {
@@ -198,7 +199,11 @@ describe("tool orchestrator", () => {
           return { stdout: "ok", stderr: "", exitCode: 0 }
         },
       }),
-      audit: createStubAudit(),
+      audit: createStubAudit({
+        appendLog: async (entry) => {
+          logs.push(entry)
+        },
+      }),
     })
 
     const result = await orchestrator.remoteExec({
@@ -211,10 +216,20 @@ describe("tool orchestrator", () => {
       status: "error",
       code: "KEY_PATH_NOT_FOUND",
       execution: { attempted: false, completed: false },
+      audit: { logWritten: true, snapshotStatus: "not-applicable" },
     })
+    expect(logs).toEqual([
+      expect.objectContaining({
+        tool: "remote_exec",
+        server: "prod-a",
+        approvalStatus: "not-required",
+        code: "KEY_PATH_NOT_FOUND",
+      }),
+    ])
   })
 
   test("missing certificatePath returns CERTIFICATE_PATH_NOT_FOUND before SSH execution", async () => {
+    const logs: Record<string, unknown>[] = []
     const tempDir = await mkdtemp(join(tmpdir(), "open-code-auth-"))
     const workspaceRoot = join(tempDir, "repo")
     const privateKeyPath = join(workspaceRoot, "keys", "client-key.pem")
@@ -245,7 +260,11 @@ describe("tool orchestrator", () => {
             return { stdout: "ok", stderr: "", exitCode: 0 }
           },
         }),
-        audit: createStubAudit(),
+        audit: createStubAudit({
+          appendLog: async (entry) => {
+            logs.push(entry)
+          },
+        }),
       })
 
       const result = await orchestrator.remoteExec({
@@ -258,7 +277,77 @@ describe("tool orchestrator", () => {
         status: "error",
         code: "CERTIFICATE_PATH_NOT_FOUND",
         execution: { attempted: false, completed: false },
+        audit: { logWritten: true, snapshotStatus: "not-applicable" },
       })
+      expect(logs).toEqual([
+        expect.objectContaining({
+          tool: "remote_exec",
+          server: "prod-a",
+          approvalStatus: "not-required",
+          code: "CERTIFICATE_PATH_NOT_FOUND",
+        }),
+      ])
+    } finally {
+      await rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test("directory auth paths are reported as AUTH_PATH_UNREADABLE", async () => {
+    const logs: Record<string, unknown>[] = []
+    const tempDir = await mkdtemp(join(tmpdir(), "open-code-auth-"))
+    const workspaceRoot = join(tempDir, "repo")
+    let execCalled = false
+
+    try {
+      await mkdir(workspaceRoot, { recursive: true })
+
+      const orchestrator = createOrchestrator({
+        registry: {
+          list: async () => [],
+          resolve: async () =>
+            createResolvedServerRecord({
+              scope: "workspace",
+              workspaceRoot,
+              auth: {
+                kind: "privateKey",
+                privateKeyPath: ".",
+              },
+            }),
+        },
+        policy: { classifyRemoteExec: () => ({ decision: "auto-allow", reason: "safe inspection command" }) },
+        ssh: createStubSsh({
+          exec: async () => {
+            execCalled = true
+            return { stdout: "ok", stderr: "", exitCode: 0 }
+          },
+        }),
+        audit: createStubAudit({
+          appendLog: async (entry) => {
+            logs.push(entry)
+          },
+        }),
+      })
+
+      const result = await orchestrator.remoteExec({
+        server: "prod-a",
+        command: "cat /etc/hosts",
+      })
+
+      expect(execCalled).toBe(false)
+      expect(result).toMatchObject({
+        status: "error",
+        code: "AUTH_PATH_UNREADABLE",
+        execution: { attempted: false, completed: false },
+        audit: { logWritten: true, snapshotStatus: "not-applicable" },
+      })
+      expect(logs).toEqual([
+        expect.objectContaining({
+          tool: "remote_exec",
+          server: "prod-a",
+          approvalStatus: "not-required",
+          code: "AUTH_PATH_UNREADABLE",
+        }),
+      ])
     } finally {
       await rm(tempDir, { recursive: true, force: true })
     }
